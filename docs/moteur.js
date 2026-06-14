@@ -178,8 +178,9 @@ export function simulerRun(p, graine) {
     for (let pid = 0; pid < nPools; pid++) {
       const membres = pools[pid], cpt = comptes[pid];
       // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
-      // Le remplaçant arrive « propre » (n'hérite PAS de la dette), entre comme ÉPARGNANT
-      // (cotisé + bonus, pas de droit d'enchère ce cycle). Le trou est porté par la cascade.
+      // Le remplaçant RATTRAPE les cotisations des tours passés (-> dépôt), mais ce rattrapage ne
+      // réduit PAS le trou : la dette du fuyard ne peut être portée par autrui, elle reste sur la
+      // cascade FGE -> SFD. Le remplaçant entre en ÉPARGNANT (pas d'enchère ce cycle ; cotisé + bonus).
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui) {
           const moisR = Math.max(1, vie - mb.tEnc);
@@ -190,9 +191,10 @@ export function simulerRun(p, graine) {
             let trou = 0;
             for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
             if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
-            // remplaçant-épargnant : reprend le sous-compte « propre » (n'hérite pas de la dette),
+            // remplaçant-épargnant : rattrape les tours passés (versés au dépôt, lui reviendront),
             // profil ÉPARGNANT sans droit d'enchère ce cycle ; il cotise et sera servi (cotisé + bonus).
-            mb.aEncaisse = false; mb.tEnc = null; mb.aFui = false; mb.cotise = 0;
+            const rattrapage = slot * p.c; cpt.depot += rattrapage;
+            mb.aEncaisse = false; mb.tEnc = null; mb.aFui = false; mb.cotise = rattrapage;
             mb.remplaceEnc = true; mb.candidatEmp = false; mb.filtreScore = false;
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(getFge(pid), reste) : 0; addFge(pid, -pf2); reste -= pf2; couvertFge += pf2;
@@ -417,7 +419,10 @@ export function journalPool(p, graine) {
           flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaissé T${mb.tEnc}) disparaît — avance non remboursée`, -trou);
           if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
           const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-          flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} en ÉPARGNANT (cotisé + bonus, pas d'enchère ce cycle)`, 0);
+          const rattrapage = slot * p.c;
+          if (rattrapage > 0) { cpt.depot += rattrapage; flux(mvt, nom, 'rattrapage', `${nom} remplace ${mb.nom} en ÉPARGNANT (pas d'enchère ce cycle) et rattrape ${slot} cotisation${slot > 1 ? 's' : ''}`, rattrapage); }
+          else flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} en ÉPARGNANT (pas d'enchère ce cycle)`, 0);
+          // le rattrapage ne réduit PAS le trou : la dette du fuyard reste sur la cascade
           if (p.mode === 'garantie') {
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; if (pf2 > 0) { fge -= pf2; reste -= pf2; flux(mvt, 'FGE', 'couverture', `FGE absorbe le trou (première perte)`, -pf2); }
@@ -426,8 +431,8 @@ export function journalPool(p, graine) {
           } else {
             flux(mvt, 'Groupe', 'résiduel', `tontine nue : le groupe subit la perte`, -trou);
           }
-          // le sous-compte repris devient un épargnant actif (n'a pas encaissé pour lui-même)
-          mb.aEncaisse = false; mb.tEnc = null; mb.cotise = 0; mb.candidatEmp = false; mb.nom = nom;
+          // le sous-compte repris devient un épargnant actif (cotisé = rattrapage + cotisations à venir)
+          mb.aEncaisse = false; mb.tEnc = null; mb.cotise = rattrapage; mb.candidatEmp = false; mb.nom = nom;
         }
       }
     }
