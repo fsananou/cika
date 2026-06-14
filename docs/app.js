@@ -66,11 +66,9 @@ const SCHEMA = [
     { k: 'plafond_tranche_sfd_frac', nom: 'Plafond tranche SFD', d: "Jusqu'où la SFD couvre, en % des avances. Au-delà = résiduel.", t: 'range', min: 0.01, max: 0.15, step: 0.01, fmt: 'pct' },
     { k: 'fge_mutualise', nom: 'FGE mutualisé entre pools', d: "Non = chaque pool autonome (la solidité ne dépend que du pool, cadre « 1 pool »). Oui = un pool sain peut renflouer un pool en fuite.", t: 'bool' },
   ]},
-  { grp: 'Règles cycle 1', desc: "Le cycle 1 démarre FGE vide : accès filtré par score + seuil de déclenchement.", items: [
-    { k: 'cycle1_scoring_actif', nom: 'Accès filtré par score', d: "Au cycle 1, n'autorise à emprunter tôt que les scores élevés (seuil décroissant du tour 1 à M/2).", t: 'bool' },
-    { k: 'cycle1_pct_t1', nom: 'Seuil score tour 1', d: "Percentile minimal de score requis au tour 1 (ex. P90 = top 10%).", t: 'range', min: 0.5, max: 0.95, step: 0.05, fmt: 'pct' },
-    { k: 'cycle1_pct_mid', nom: 'Seuil score tour M/2', d: "Percentile minimal au milieu du cycle (le seuil décroît jusque-là).", t: 'range', min: 0.3, max: 0.8, step: 0.05, fmt: 'pct' },
-    { k: 'cycle1_reduction_fuite', nom: 'Réduction de fuite (sélectionnés)', d: "Hypothèse : un emprunteur passé par le filtre fuit dans cette proportion du taux de base (0,33 = fuit 3× moins). C'est ce qui rend le filtre protecteur.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
+  { grp: 'Profils & cycle 1', desc: "Les premiers tours du cycle 1 sont réservés (en interne) aux profils sûrs, servis tant qu'il en reste ; ils fuient moins.", items: [
+    { k: 'part_eligibles_enchere', nom: 'Part de profils sûrs', d: "Fraction des candidats-emprunteurs jugés sûrs (bon score). Ils sont servis en priorité aux premiers tours. Le scoring peut se tromper : c'est une probabilité, pas une garantie.", t: 'range', min: 0.2, max: 1, step: 0.05, fmt: 'pct' },
+    { k: 'red_fuite_eligible', nom: 'Fuite des profils sûrs', d: "Taux de fuite des profils sûrs, en proportion du taux de base (0,33 = ils fuient 3× moins). C'est ce qui rend la sélection protectrice.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
   ]},
   { grp: 'Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
@@ -238,10 +236,9 @@ function drawPnlDist(a) {
 
 // ---- courbe de vulnérabilité cycle 1 ----
 // par tour : perte max d'une fuite unique (barres) vs couverture disponible (FGE + tranche SFD, ligne).
-// un tour est "en alerte" (barre rouge) si une seule fuite épuiserait la couverture disponible.
-// Démo de l'effet du filtre de score au cycle 1 : on balaie le taux de fuite et on compare,
-// AVEC vs SANS filtre, le résiduel par pool (perte non couverte). Le filtre sélectionne les
-// meilleurs profils, qui fuient moins -> moins de pertes. Toujours sur 1 pool isolé.
+// Démo de l'effet de la sélection au cycle 1 : on balaie le taux de fuite et on compare le résiduel
+// par pool AVEC la part de profils éligibles courante vs SANS sélection (aucun éligible réservé).
+// Réserver les premiers tours aux bons profils (qui fuient moins) réduit les pertes. 1 pool isolé.
 function drawFiltreDemo(p) {
   const cv = $('vulnCanvas'); if (!cv) return;
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
@@ -249,8 +246,8 @@ function drawFiltreDemo(p) {
   const runs = Math.min(300, Math.max(120, p._runs * 2));
   const data = fuites.map(pf => {
     const base = { ...p, n_pools: 1, p_fuite_base: pf };
-    const on = monteCarlo({ ...base, cycle1_scoring_actif: true }, runs, 12345);
-    const off = monteCarlo({ ...base, cycle1_scoring_actif: false }, runs, 12345);
+    const on = monteCarlo({ ...base }, runs, 12345);                       // profils sûrs servis tôt (fuient moins)
+    const off = monteCarlo({ ...base, red_fuite_eligible: 1 }, runs, 12345); // même compo, mais sûrs ne fuient pas moins
     return { pf, on: on.residuel.moy, off: off.residuel.moy };
   });
   const padL = 56, padR = 14, padB = 30, padT = 14;
@@ -269,10 +266,11 @@ function drawFiltreDemo(p) {
   });
   const moyOff = data.reduce((s, d) => s + d.off, 0) / n, moyOn = data.reduce((s, d) => s + d.on, 0) / n;
   const gain = moyOff > 0 ? (1 - moyOn / moyOff) * 100 : 0;
+  const facteur = (p.red_fuite_eligible ?? 0.33);
   $('vulnLegende').innerHTML =
-    `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> sans filtre de score</span>` +
-    `<span class="lg"><i class="sw" style="background:#0f4c4a"></i> avec filtre de score</span>` +
-    `<span class="lg-note">Résiduel moyen par pool (perte non couverte) au cycle 1, selon le taux de fuite. Le filtre réduit la perte de ~${Math.round(gain)} % en moyenne ici : en réservant les premiers tours aux meilleurs profils (qui fuient ${Math.round((1 - (p.cycle1_reduction_fuite ?? 0.33)) * 100)} % de moins, par hypothèse), on évite les fuites précoces coûteuses quand le FGE est encore vide.</span>`;
+    `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> profils sûrs fuient autant que les autres</span>` +
+    `<span class="lg"><i class="sw" style="background:#0f4c4a"></i> profils sûrs fuient ${facteur < 1 ? (1 / facteur).toFixed(1) + '×' : ''} moins (réservés aux 1ers tours)</span>` +
+    `<span class="lg-note">Résiduel moyen par pool (moyenne Monte Carlo), selon le taux de fuite. Réserver les premiers tours du cycle 1 aux profils sûrs — qui fuient moins — réduit la perte de ~${Math.round(gain)} % en moyenne : on évite les fuites précoces coûteuses quand le FGE est encore vide.</span>`;
 }
 
 // ---- page FLUX : déroulé d'un pool, tour par tour ----

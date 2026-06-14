@@ -17,6 +17,7 @@ function Phi(x) { return 0.5 * (1 + erf(x / Math.SQRT2)); }
 function PhiInv(p) { p = Math.min(Math.max(p, 1e-12), 1 - 1e-12); const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00], b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01], c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00], d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00]; const pl = 0.02425, ph = 1 - pl; let q, r; if (p < pl) { q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); } if (p <= ph) { q = p - 0.5; r = q * q; return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1); } q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
 function quantile(s, q) { if (!s.length) return 0; const pos = (s.length - 1) * q, b = Math.floor(pos), r = pos - b; return s[b + 1] !== undefined ? s[b] + r * (s[b + 1] - s[b]) : s[b]; }
 const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0;
+// (le facteur de réduction de fuite des profils sûrs est exposé en paramètre : red_fuite_eligible)
 
 // ---- Config par défaut (miroir de config.py, coût fixe = 0) ----
 export const DEFAUTS = {
@@ -52,12 +53,11 @@ export const DEFAUTS = {
   // FGE/tranche SFD isolés par pool (défaut) : la solidité d'un pool ne dépend que de lui-même.
   // true = mutualisés entre tous les pools (un pool sain peut renflouer un pool en fuite).
   fge_mutualise: false,
-  // RÈGLES CYCLE 1 : accès filtré par score décroissant (P90 au tour 1 -> P50 au tour M/2).
-  // L'enchère se déclenche toujours ; on limite le risque de fuite des premiers tours via le filtre.
-  cycle1_scoring_actif: true,
-  cycle1_pct_t1: 0.90,           // percentile de score requis au tour 1 (P90)
-  cycle1_pct_mid: 0.50,          // percentile requis au tour M/2 (P50)
-  cycle1_reduction_fuite: 0.33,  // un emprunteur passé par le filtre fuit 3× moins (meilleur profil)
+  // CYCLE 1 (règles internes) : les premiers tours sont réservés aux profils « éligibles enchère »
+  // (bons scores), qui fuient moins. Le seul levier exposé est la PART de tels profils, calibrée
+  // pour qu'il y ait toujours qui enchérir. Les seuils et la réduction de fuite sont internes.
+  part_eligibles_enchere: 0.55,  // part des candidats-emprunteurs au profil « sûr » (éligible enchère)
+  red_fuite_eligible: 0.33,      // les profils sûrs fuient à ce facteur du taux de base (0,33 = 3× moins)
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
   secteurs: [["commerce", 0.30, 0.30], ["agriculture", 0.20, 0.45], ["transport", 0.15, 0.25], ["services", 0.20, 0.15], ["artisanat", 0.15, 0.20]],
@@ -130,7 +130,10 @@ export function simulerRun(p, graine) {
       // profil déclaré : veut emprunter (accès précoce) OU épargner. + filtre de fiabilité (aHist).
       const declareEmp = rng() < p.part_emprunteurs_declares;
       const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true; // accès phase emprunteurs
-      return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
+      // RÈGLE INTERNE cycle 1 : une part des candidats a un bon score -> éligible aux enchères des
+      // premiers tours (et fuit moins). La part garantit qu'il y a toujours qui enchérir.
+      const eligibleEnchere = candidatEmp && rng() < p.part_eligibles_enchere;
+      return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, eligibleEnchere, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
     });
     pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0 });
   }
@@ -154,19 +157,10 @@ export function simulerRun(p, graine) {
   const exposMois = new Array(totalTours).fill(0);
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
 
-  // --- RÈGLES CYCLE 1 ---
-  // score de fiabilité par membre = -seuil (seuil bas = PD basse = plus fiable). Bonus historique.
-  for (const membres of pools) for (const mb of membres) mb.score = -mb.seuil + (mb.aHist ? 0.5 : 0);
-  // seuils de percentile par tour du cycle 1 : S_t décroît de pct_t1 (tour 0) à pct_mid (tour M/2)
-  function seuilScorePool(membres, slot) {
-    if (!p.cycle1_scoring_actif) return -Infinity;
-    const mid = Math.max(1, Math.round(m / 2));
-    if (slot >= mid) return -Infinity; // au-delà de M/2 : pas de seuil
-    const frac = slot / mid; // 0 au tour 1 -> ~1 au tour M/2
-    const pct = p.cycle1_pct_t1 + (p.cycle1_pct_mid - p.cycle1_pct_t1) * frac;
-    const scores = membres.map(x => x.score).sort((a, b) => a - b);
-    return quantile(scores, pct); // score minimal requis ce tour
-  }
+  // --- RÈGLES CYCLE 1 (internes) ---
+  // Au 1er cycle, on réserve l'enchère aux profils SÛRS tant qu'il en reste de disponibles : tour 1
+  // les sûrs, tour 2 les sûrs restants, etc. Quand ils ont tous encaissé, la liste filtrée se vide
+  // et l'enchère s'ouvre à tous (repli). Les sûrs fuient red_fuite_eligible × moins.
   // suivi de la courbe de vulnérabilité du CYCLE 1 (par tour) : expo nette, FGE dispo, vulnérabilité
   const vulnCycle1 = []; // [{tour, expoNette, fgeDispo, vuln, alerte}]
   let tours_fge_insuffisant = 0;
@@ -184,7 +178,7 @@ export function simulerRun(p, graine) {
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui) {
           const moisR = Math.max(1, vie - mb.tEnc);
-          const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.33) : 1);
+          const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.red_fuite_eligible ?? 0.33) : 1);
           const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
             nFuites++;
@@ -234,13 +228,13 @@ export function simulerRun(p, graine) {
       const cycle1 = (t <= m); // premier cycle
       if (phaseEmprunteur) {
         // --- PHASE EMPRUNTEURS : enchère, avance SFD, crédit-relais, prime + risque de fuite ---
-        let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
-        // RÈGLE CYCLE 1.a : filtre par score décroissant (P90 -> P50)
-        const filtreActif = cycle1 && p.cycle1_scoring_actif;
-        if (filtreActif) {
-          const sMin = seuilScorePool(membres, slot);
-          elig = elig.filter(mb => mb.score >= sMin);
-        }
+        // candidats préférés (population emprunteur déclarée) ; repli anti-gel sur tout non-encaisseur
+        const nonEnc = actifs.filter(mb => !mb.aEncaisse);
+        let elig = nonEnc.filter(mb => !p.deux_populations || mb.candidatEmp);
+        if (!elig.length) elig = nonEnc;                 // jamais de gel : on attribue toujours
+        // RÈGLE CYCLE 1 : réserver aux profils sûrs tant qu'il en reste (sinon ouvert à tous).
+        const filtreActif = cycle1;
+        if (filtreActif) { const e = elig.filter(mb => mb.eligibleEnchere); if (e.length) elig = e; }
         // l'enchère se déclenche toujours (pas de seuil de collecte)
         let eligBid = elig;
         if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
@@ -379,24 +373,18 @@ export function journalPool(p, graine) {
     if (p.comportemental_actif && (tp === "modéré" || tp === "épargnant") && rng() < p.bascule_urgents) { tp = "urgent"; urg = p.urg_urgent; }
     const aHist = rng() < p.part_avec_historique;
     const declareEmp = rng() < p.part_emprunteurs_declares;
+    const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true;
+    const eligibleEnchere = candidatEmp && rng() < p.part_eligibles_enchere;
     return { i, nom: NOMS[i % NOMS.length], seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist,
-             candidatEmp: p.deux_populations ? (declareEmp && aHist) : true, estEpargnant: false,
+             candidatEmp, eligibleEnchere, estEpargnant: false,
              aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remplacant: null };
     });
-  membres.forEach(mb => mb.score = -mb.seuil + (mb.aHist ? 0.5 : 0));
   const cpt = { prets: [], decaisseCumule: 0, depot: 0 };
   let fge = 0, trancheUtil = 0, nRempl = 0;
   const etatZ = {};
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
   const rDepotMensuel = (p.r_depot_annuel || 0) / 12;
   const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
-
-  function seuilScorePool(slot) {
-    if (!p.cycle1_scoring_actif) return -Infinity;
-    const mid = Math.max(1, Math.round(m / 2)); if (slot >= mid) return -Infinity;
-    const frac = slot / mid, pct = p.cycle1_pct_t1 + (p.cycle1_pct_mid - p.cycle1_pct_t1) * frac;
-    return quantile(membres.map(x => x.score).sort((a, b) => a - b), pct);
-  }
 
   const tours = []; // { tour, cycle, slot, phase, mouvements:[{acteur,type,libelle,montant,depot,fge}] }
   const flux = (arr, acteur, type, libelle, montant) => arr.push({ acteur, type, libelle, montant, depot: cpt.depot, fge });
@@ -464,10 +452,12 @@ export function journalPool(p, graine) {
 
     // 3. attribution + décaissement
     if (phaseEmprunteur) {
-      let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
+      const nonEnc = actifs.filter(mb => !mb.aEncaisse);
+      let elig = nonEnc.filter(mb => !p.deux_populations || mb.candidatEmp);
+      if (!elig.length) elig = nonEnc;                 // jamais de gel
       const cycle1 = t <= m;
-      const filtreActif = cycle1 && p.cycle1_scoring_actif;
-      if (filtreActif) { const sMin = seuilScorePool(slot); elig = elig.filter(mb => mb.score >= sMin); }
+      const filtreActif = cycle1;
+      if (filtreActif) { const e = elig.filter(mb => mb.eligibleEnchere); if (e.length) elig = e; }
       let eligBid = elig;  // l'enchère se déclenche toujours
       if (p.mode === 'garantie' && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
       let gagnant = null, bideur = false, bidW = 0;
