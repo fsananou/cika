@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=15';
+import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=16';
 
 const fmt = x => Math.round(x).toLocaleString('fr-FR');
 const fmtM = x => Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k';
@@ -8,32 +8,36 @@ const $ = id => document.getElementById(id);
 // config maître unique (tous les paramètres) + nb de runs
 let PARAMS = { ...DEFAUTS, _runs: 80 };
 
-// ---- navigation : 2 onglets ----
-document.querySelectorAll('.niv-btn').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('.niv-btn').forEach(x => x.classList.remove('active'));
+// ---- navigation : 2 onglets (Paramètres / Résultats) ----
+document.querySelectorAll('#ongletSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
-  const niv = b.dataset.niv;
-  $('vue-simulation').hidden = (niv !== 'simulation');
-  $('vue-doc').hidden = (niv !== 'doc');
+  const onglet = b.dataset.onglet;
+  $('vue-parametres').hidden = (onglet !== 'parametres');
+  $('vue-resultats').hidden = (onglet !== 'resultats');
 }));
+function allerResultats() {
+  document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.onglet === 'resultats'));
+  $('vue-parametres').hidden = true; $('vue-resultats').hidden = false;
+}
 
 // ============ SCHÉMA DE TOUS LES PARAMÈTRES ============
 const SCHEMA = [
-  { grp: '📐 Structure du cercle', desc: "La taille et la durée des pools.", items: [
+  { grp: 'Structure du cercle', desc: "La taille et la durée des pools.", items: [
     { k: 'n_pools', nom: 'Nombre de pools', d: "Combien de cercles tournent en parallèle (échelle du portefeuille).", t: 'range', min: 10, max: 100, step: 10 },
     { k: 'm_membres', nom: 'Membres par pool', d: "Taille d'un cercle. Détermine le pot = (M−1)×cotisation.", t: 'range', min: 6, max: 15, step: 1 },
     { k: 'c', nom: 'Cotisation mensuelle', d: "Ce que chaque membre verse chaque mois (XOF).", t: 'range', min: 25000, max: 200000, step: 25000, fmt: 'k' },
     { k: 'n_cycles', nom: 'Nombre de cycles', d: "Durée de vie du produit = M × cycles mois.", t: 'range', min: 1, max: 4, step: 1 },
     { k: 'k_max', nom: 'Max même secteur / pool', d: "Diversification : au plus K membres du même secteur par pool (limite la corrélation).", t: 'range', min: 1, max: 6, step: 1 },
   ]},
-  { grp: '🔀 Deux populations', desc: "Sépare emprunteurs (enchères, début) et épargnants (fin, rémunérés).", items: [
+  { grp: 'Deux populations', desc: "Sépare emprunteurs (enchères, début) et épargnants (fin, rémunérés).", items: [
     { k: 'deux_populations', nom: 'Modèle deux populations', d: "Les premiers tours = emprunteurs (enchères) ; les derniers = épargnants (servis du plus sûr au moins sûr, rémunérés).", t: 'bool' },
     { k: 'x_tours_emprunteurs', nom: 'Décalage x (tours emprunteurs)', d: "Nombre de tours empruntables = N/2 + x. Plus haut = plus d'emprunteurs, plus de revenu, moins d'épargnants.", t: 'range', min: -3, max: 4, step: 1 },
     { k: 'part_emprunteurs_declares', nom: 'Part candidats-emprunteurs', d: "Part de membres qui déclarent vouloir emprunter ET sont jugés fiables (accès précoce).", t: 'range', min: 0.2, max: 0.9, step: 0.05, fmt: 'pct' },
     { k: 'part_bids_aux_epargnants', nom: 'Part des bids aux épargnants', d: "Fraction du surplus d'enchères reversée aux épargnants (leur rémunération).", t: 'range', min: 0, max: 0.8, step: 0.05, fmt: 'pct' },
     { k: 'r_depot_annuel', nom: 'Rémunération des dépôts', d: "Taux annuel que la SFD verse sur les dépôts (rémunère l'épargne).", t: 'range', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
   ]},
-  { grp: '⚙️ Produit & mécanisme', desc: "Type de tontine et structure du coût.", items: [
+  { grp: 'Produit & mécanisme', desc: "Type de tontine et structure du coût.", items: [
     { k: 'mode', nom: 'Type de tontine', d: "Nue : sans garantie ni frais. Garantie : prime + couverture.", t: 'mode' },
     { k: 'prime_facteur_prudence', nom: 'Prudence de la prime', d: "1× = actuariel juste. >1 = prime majorée, plus robuste au stress (mais plus chère).", t: 'range', min: 0.8, max: 2.5, step: 0.1, fmt: 'x' },
     { k: 'prime_operateur_taux', nom: 'Marge Opérateur', d: "Marge de la plateforme, en % du pot, prélevée sur chaque encaissement.", t: 'range', min: 0, max: 0.04, step: 0.005, fmt: 'pct' },
@@ -41,17 +45,17 @@ const SCHEMA = [
     { k: 'rho_mensuel', nom: 'Valeur-temps (ρ)', d: "Combien un membre pressé valorise l'accès anticipé → niveau des bids.", t: 'range', min: 0.005, max: 0.05, step: 0.005, fmt: 'pct' },
     { k: 'bid_plafond_frac_pot', nom: 'Plafond du surplus de bid', d: "Limite du surplus payé pour passer devant (compétitivité / usure).", t: 'range', min: 0.04, max: 0.25, step: 0.02, fmt: 'pct' },
   ]},
-  { grp: '👥 Préférences de liquidité', desc: "Qui est pressé, qui est patient.", items: [
+  { grp: 'Préférences de liquidité', desc: "Qui est pressé, qui est patient.", items: [
     { k: 'part_urgent', nom: 'Part d\'urgents', d: "Membres qui veulent leur argent tôt (bident le plus).", t: 'range', min: 0, max: 0.6, step: 0.05, fmt: 'pct' },
     { k: 'part_epargnant', nom: 'Part d\'épargnants', d: "Membres patients qui attendent (reçoivent gratuitement).", t: 'range', min: 0, max: 0.8, step: 0.05, fmt: 'pct' },
   ]},
-  { grp: '🚪 Fuite & défaillance', desc: "Le risque que le modèle doit couvrir.", items: [
+  { grp: 'Fuite & défaillance', desc: "Le risque que le modèle doit couvrir.", items: [
     { k: 'p_fuite_base', nom: 'Taux de fuite', d: "% des bénéficiaires qui disparaissent après avoir encaissé.", t: 'range', min: 0.02, max: 0.30, step: 0.02, fmt: 'pct' },
     { k: 'fuite_mult_tour_precoce', nom: 'Tentation tour précoce', d: "Multiplicateur de fuite au tour 1 (prendre tôt = plus tentant de fuir).", t: 'range', min: 1, max: 3, step: 0.2, fmt: 'x' },
     { k: 'charge_z_fuite', nom: 'Sensibilité macro', d: "À quel point un choc économique augmente les fuites (corrélation).", t: 'range', min: 0, max: 0.8, step: 0.05 },
     { k: 'taux_echec_friction', nom: 'Échec de prélèvement', d: "% de cotisations qui échouent temporairement (récupérable).", t: 'range', min: 0, max: 0.15, step: 0.01, fmt: 'pct' },
   ]},
-  { grp: '🛡️ Couverture (3 étages)', desc: "Comment le trou d'une fuite est absorbé.", items: [
+  { grp: 'Couverture (3 étages)', desc: "Comment le trou d'une fuite est absorbé.", items: [
     { k: 'mitigation_active', nom: 'Mitigations', d: "Activer accès séquencé + garantie d'enchère + prélèvement auto.", t: 'bool' },
     { k: 't_restreint', nom: 'Tours réservés (historique)', d: "Les N premiers tours réservés aux membres avec historique.", t: 'range', min: 0, max: 5, step: 1 },
     { k: 'g_cotisations', nom: 'Consignation pour bider tôt', d: "Garantie (en nb de cotisations) saisie si fuite.", t: 'range', min: 0, max: 3, step: 1 },
@@ -59,7 +63,13 @@ const SCHEMA = [
     { k: 'tranche_sfd_active', nom: 'Tranche SFD', d: "La SFD absorbe après le FGE (sa peau dans le jeu).", t: 'bool' },
     { k: 'plafond_tranche_sfd_frac', nom: 'Plafond tranche SFD', d: "Jusqu'où la SFD couvre, en % des avances. Au-delà = résiduel.", t: 'range', min: 0.01, max: 0.15, step: 0.01, fmt: 'pct' },
   ]},
-  { grp: '🌩️ Stress', desc: "Tester le modèle en conditions dégradées.", items: [
+  { grp: 'Règles cycle 1', desc: "Le cycle 1 démarre FGE vide : accès filtré par score + seuil de déclenchement.", items: [
+    { k: 'cycle1_scoring_actif', nom: 'Accès filtré par score', d: "Au cycle 1, n'autorise à emprunter tôt que les scores élevés (seuil décroissant du tour 1 à M/2).", t: 'bool' },
+    { k: 'cycle1_pct_t1', nom: 'Seuil score tour 1', d: "Percentile minimal de score requis au tour 1 (ex. P90 = top 10%).", t: 'range', min: 0.5, max: 0.95, step: 0.05, fmt: 'pct' },
+    { k: 'cycle1_pct_mid', nom: 'Seuil score tour M/2', d: "Percentile minimal au milieu du cycle (le seuil décroît jusque-là).", t: 'range', min: 0.3, max: 0.8, step: 0.05, fmt: 'pct' },
+    { k: 'alpha_declenchement', nom: 'Seuil de déclenchement α', d: "L'enchère ne s'ouvre que si la collecte du tour atteint α × M × cotisation.", t: 'range', min: 0.5, max: 1, step: 0.05, fmt: 'pct' },
+  ]},
+  { grp: 'Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
     { k: 'choc_fuite', nom: 'Choc de fuite', d: "Points de fuite ajoutés en stress comportemental.", t: 'range', min: 0, max: 0.15, step: 0.01, fmt: 'pct' },
     { k: 'bascule_urgents', nom: 'Bascule vers urgents', d: "Part de patients qui deviennent pressés sous stress.", t: 'range', min: 0, max: 0.6, step: 0.05, fmt: 'pct' },
@@ -134,7 +144,10 @@ function lancer() {
     renderFluxSfd(a, PARAMS);
     renderTableauScenarios();
     drawPnlDist(a);
-    $('btnRun').textContent = '▶ Lancer';
+    drawVuln(a, PARAMS);
+    $('btnRun').textContent = 'Lancer';
+    $('simStatus').textContent = 'calculé';
+    allerResultats();
   }, 20);
 }
 
@@ -151,6 +164,7 @@ function renderKPIs(a, p) {
     { l: 'Coût membre tour 1', v: pct(a.coutTour1.moy / pot), c: a.coutTour1.moy / pot < 0.2 ? 'ok' : 'brand', s: 'le dernier tour ≈ 0' },
     { l: 'Fuites moyennes', v: kpiV(a.fuites, x => Math.round(x).toString()), c: 'brand', s: 'bénéficiaires disparus' },
     { l: 'Rémunération épargnant', v: kpiV(a.remunParEpargnant, fmtM), c: 'ok', s: 'bonus du membre patient' },
+    { l: 'Tours à découvert (cy.1)', v: (a.toursFgeInsuffisantMoy ?? 0).toFixed(1), c: (a.toursFgeInsuffisantMoy ?? 0) < 0.5 ? 'ok' : 'bad', s: 'couverture < pire fuite' },
   ];
   $('kpiGrid').innerHTML = items.map(i => `<div class="kpi"><div class="lbl">${i.l}</div><div class="val ${i.c}">${i.v}</div><small>${i.s}</small></div>`).join('');
 }
@@ -202,7 +216,7 @@ function drawExpo(a, p) {
   const xs = i => pad + (i / (prof.length - 1)) * (W - pad - 8), ys = v => H - 22 - (v / mx) * (H - 36);
   ctx.beginPath(); ctx.moveTo(xs(0), ys(0)); prof.forEach((v, i) => ctx.lineTo(xs(i), ys(v))); ctx.lineTo(xs(prof.length - 1), ys(0)); ctx.closePath(); ctx.fillStyle = 'rgba(15,76,74,.12)'; ctx.fill();
   ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath(); prof.forEach((v, i) => i ? ctx.lineTo(xs(i), ys(v)) : ctx.moveTo(xs(i), ys(v))); ctx.stroke();
-  ctx.fillStyle = '#5b6b87'; ctx.font = '11px sans-serif'; ctx.fillText(fmtM(mx), 4, 14); ctx.fillText('0', 4, H - 22); ctx.textAlign = 'center'; ctx.fillText('mois →', W / 2, H - 4);
+  ctx.fillStyle = '#9ca3af'; ctx.font = '11px Inter,sans-serif'; ctx.fillText(fmtM(mx), 4, 14); ctx.fillText('0', 4, H - 22); ctx.textAlign = 'center'; ctx.fillText('mois', W / 2, H - 4);
 }
 function drawPnlDist(a) {
   const cv = $('pnlCanvas'); if (!cv) return; const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
@@ -210,8 +224,45 @@ function drawPnlDist(a) {
   const lo = Math.min(...data), hi = Math.max(...data), bins = 24, w = (hi - lo) / bins || 1, cnt = new Array(bins).fill(0);
   data.forEach(v => { let b = Math.floor((v - lo) / w); b = Math.max(0, Math.min(bins - 1, b)); cnt[b]++; });
   const mc = Math.max(...cnt), pad = 30, bw = (W - pad * 2) / bins;
-  cnt.forEach((c, i) => { const x = pad + i * bw, h = (c / mc) * (H - 38); const mid = lo + (i + 0.5) * w; ctx.fillStyle = mid >= 0 ? '#15803d' : '#b91c1c'; ctx.fillRect(x, H - 20 - h, bw - 1, h); });
-  ctx.fillStyle = '#5b6b87'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left'; ctx.fillText(lo.toFixed(0) + 'M', pad, H - 4); ctx.textAlign = 'right'; ctx.fillText(hi.toFixed(0) + 'M', W - 4, H - 4); ctx.textAlign = 'center'; ctx.fillText('P&L brut →', W / 2, H - 4);
+  cnt.forEach((c, i) => { const x = pad + i * bw, h = (c / mc) * (H - 38); const mid = lo + (i + 0.5) * w; ctx.fillStyle = mid >= 0 ? '#059669' : '#dc2626'; ctx.fillRect(x, H - 20 - h, bw - 1, h); });
+  ctx.fillStyle = '#9ca3af'; ctx.font = '11px Inter,sans-serif'; ctx.textAlign = 'left'; ctx.fillText(lo.toFixed(0) + 'M', pad, H - 4); ctx.textAlign = 'right'; ctx.fillText(hi.toFixed(0) + 'M', W - 4, H - 4); ctx.textAlign = 'center'; ctx.fillText('P&L brut', W / 2, H - 4);
+}
+
+// ---- courbe de vulnérabilité cycle 1 ----
+// par tour : perte max d'une fuite unique (barres) vs couverture disponible (FGE + tranche SFD, ligne).
+// un tour est "en alerte" (barre rouge) si une seule fuite épuiserait la couverture disponible.
+function drawVuln(a, p) {
+  const cv = $('vulnCanvas'); if (!cv) return;
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
+  const prof = a.vulnProfil;
+  if (!prof || !prof.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Activez « Accès filtré par score » (règles cycle 1) pour voir la courbe.', 16, H / 2); $('vulnLegende').innerHTML = ''; return; }
+  const padL = 52, padR = 12, padB = 26, padT = 14;
+  const mx = Math.max(...prof.map(v => Math.max(v.perteMax, v.couvertureDispo)), 1);
+  const n = prof.length, plotW = W - padL - padR, plotH = H - padB - padT;
+  const xc = i => padL + (i + 0.5) * (plotW / n);
+  const yv = v => padT + plotH - (v / mx) * plotH;
+  // grille + axes
+  ctx.strokeStyle = '#f3f4f6'; ctx.lineWidth = 1; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
+  for (let g = 0; g <= 4; g++) { const yy = padT + (g / 4) * plotH, val = mx * (1 - g / 4); ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText(fmtM(val), padL - 6, yy + 3); }
+  // barres = perte max d'une fuite (rouge si alerte, sinon gris)
+  const bw = Math.min(36, (plotW / n) * 0.55);
+  prof.forEach((v, i) => {
+    const x = xc(i) - bw / 2, h = (v.perteMax / mx) * plotH;
+    ctx.fillStyle = v.partAlerte >= 0.5 ? 'rgba(220,38,38,.80)' : 'rgba(209,213,219,.95)';
+    ctx.fillRect(x, padT + plotH - h, bw, h);
+    ctx.fillStyle = '#9ca3af'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif'; ctx.fillText('T' + v.tour, xc(i), H - 8);
+  });
+  // ligne = couverture disponible (FGE + tranche SFD)
+  ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
+  prof.forEach((v, i) => i ? ctx.lineTo(xc(i), yv(v.couvertureDispo)) : ctx.moveTo(xc(i), yv(v.couvertureDispo))); ctx.stroke();
+  prof.forEach((v, i) => { ctx.fillStyle = '#0f4c4a'; ctx.beginPath(); ctx.arc(xc(i), yv(v.couvertureDispo), 2.5, 0, 7); ctx.fill(); });
+  // légende
+  const nAlerte = prof.filter(v => v.partAlerte >= 0.5).length;
+  $('vulnLegende').innerHTML =
+    `<span class="lg"><i class="sw" style="background:rgba(209,213,219,.95)"></i> pire fuite (couverte)</span>` +
+    `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> pire fuite (à découvert)</span>` +
+    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> couverture disponible (FGE + tranche SFD)</span>` +
+    `<span class="lg-note">${nAlerte === 0 ? 'Aucun tour à découvert : la couverture absorbe toujours la pire fuite, même FGE vide.' : nAlerte + ' tour(s) où une seule fuite épuiserait la couverture disponible.'}</span>`;
 }
 
 // ---- init ----

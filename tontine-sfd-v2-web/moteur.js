@@ -47,6 +47,12 @@ export const DEFAUTS = {
   garantie_enchere_active: true, g_cotisations: 1,
   prime_active: true, fge_actif: true,
   tranche_sfd_active: true, plafond_tranche_sfd_frac: 0.15,
+  // RÈGLES CYCLE 1 : accès filtré par score décroissant (P90 au tour 1 -> P50 au tour M/2),
+  // seuil de déclenchement de l'enchère (alpha), suivi explicite du FGE en constitution.
+  cycle1_scoring_actif: true,
+  cycle1_pct_t1: 0.90,           // percentile de score requis au tour 1 (P90)
+  cycle1_pct_mid: 0.50,          // percentile requis au tour M/2 (P50)
+  alpha_declenchement: 0.80,     // l'enchère ne s'ouvre que si cotisations >= alpha * M * c
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
   secteurs: [["commerce", 0.30, 0.30], ["agriculture", 0.20, 0.45], ["transport", 0.15, 0.25], ["services", 0.20, 0.15], ["artisanat", 0.15, 0.20]],
@@ -132,6 +138,23 @@ export function simulerRun(p, graine) {
   const exposMois = new Array(totalTours).fill(0);
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
 
+  // --- RÈGLES CYCLE 1 ---
+  // score de fiabilité par membre = -seuil (seuil bas = PD basse = plus fiable). Bonus historique.
+  for (const membres of pools) for (const mb of membres) mb.score = -mb.seuil + (mb.aHist ? 0.5 : 0);
+  // seuils de percentile par tour du cycle 1 : S_t décroît de pct_t1 (tour 0) à pct_mid (tour M/2)
+  function seuilScorePool(membres, slot) {
+    if (!p.cycle1_scoring_actif) return -Infinity;
+    const mid = Math.max(1, Math.round(m / 2));
+    if (slot >= mid) return -Infinity; // au-delà de M/2 : pas de seuil
+    const frac = slot / mid; // 0 au tour 1 -> ~1 au tour M/2
+    const pct = p.cycle1_pct_t1 + (p.cycle1_pct_mid - p.cycle1_pct_t1) * frac;
+    const scores = membres.map(x => x.score).sort((a, b) => a - b);
+    return quantile(scores, pct); // score minimal requis ce tour
+  }
+  // suivi de la courbe de vulnérabilité du CYCLE 1 (par tour) : expo nette, FGE dispo, vulnérabilité
+  const vulnCycle1 = []; // [{tour, expoNette, fgeDispo, vuln, alerte}]
+  let tours_fge_insuffisant = 0;
+
   for (let t = 1; t <= totalTours; t++) {
     const z = zMois[t - 1], slot = (t - 1) % m;
     if (slot === 0) for (const mb of pools.flat()) if (!mb.aFui) mb.aEncaisse = false;
@@ -167,11 +190,20 @@ export function simulerRun(p, graine) {
 
       // 3. attribution + 4. décaissement
       let gagnant = null, bideur = false, bidSurplusWtp = 0;
+      const cycle1 = (t <= m); // premier cycle
       if (phaseEmprunteur) {
         // --- PHASE EMPRUNTEURS : enchère, avance SFD, crédit-relais, prime + risque de fuite ---
-        const elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
-        let eligBid = elig;
-        if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = elig.filter(mb => mb.aHist);
+        let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
+        // RÈGLE CYCLE 1.a : filtre par score décroissant (P90 -> P50)
+        if (cycle1 && p.cycle1_scoring_actif) {
+          const sMin = seuilScorePool(membres, slot);
+          elig = elig.filter(mb => mb.score >= sMin);
+        }
+        // RÈGLE CYCLE 1.b : seuil de déclenchement — l'enchère ne s'ouvre que si la collecte
+        // du tour atteint alpha * M * c ; sinon, allocation sans enchère (déclenchement forcé).
+        const enchereOuverte = !(cycle1 && p.cycle1_scoring_actif) || (potColl >= p.alpha_declenchement * m * p.c);
+        let eligBid = enchereOuverte ? elig : [];
+        if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
         if (p.mode === "garantie") {
           let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
           if (best && bestW > 0.01 * pot) { gagnant = best; bideur = true; bidSurplusWtp = bestW; if (p.mitigation_active && p.garantie_enchere_active && slot < p.t_restreint && gagnant.consign === 0) gagnant.consign = p.g_cotisations * p.c; }
@@ -232,6 +264,26 @@ export function simulerRun(p, graine) {
       for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; }
       exposMois[t - 1] += cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     }
+    // --- COURBE DE VULNÉRABILITÉ CYCLE 1 (FGE en constitution) ---
+    // À la fin du tour t, on mesure l'exposition nette du portefeuille (avances en cours non
+    // récupérées) face au FGE disponible. Tant que le FGE se constitue (cycle 1), on logue
+    // les tours où la couverture disponible est inférieure à la plus grosse perte d'une fuite.
+    if (t <= m) {
+      const expoNette = exposMois[t - 1];
+      // plus grosse perte d'une fuite unique au tour suivant (pire avance individuelle en cours)
+      let perteMax = 0;
+      for (let pid = 0; pid < nPools; pid++) {
+        for (const pr of comptes[pid].prets) if (pr.actif && pr.restant > perteMax) perteMax = pr.restant;
+      }
+      const plafTranche = p.tranche_sfd_active
+        ? Math.max(0, p.plafond_tranche_sfd_frac * Math.max(comptes.reduce((s, c) => s + c.decaisseCumule, 0), 1) - trancheSfdUtilisee)
+        : 0;
+      const fgeDispo = fge;                       // première perte, hors capital fintech
+      const couvertureDispo = fgeDispo + plafTranche;
+      const alerte = couvertureDispo < perteMax;  // une seule fuite épuiserait la couverture dispo
+      if (alerte) tours_fge_insuffisant++;
+      vulnCycle1.push({ tour: t, expoNette, fgeDispo, couvertureDispo, perteMax, vuln: Math.max(0, perteMax - couvertureDispo), alerte });
+    }
   }
 
   const nMembres = nPools * m, mois = totalTours;
@@ -256,6 +308,7 @@ export function simulerRun(p, graine) {
     remunEpargnants: totalRemun, remunParEpargnant, nEpargnants, interetsDepots,
     expoMois: exposMois, expoMax: Math.max(...exposMois),
     pnlOp, margePool, breakEven, revenus, coutAcq, coutOps, seuilEmp,
+    vulnCycle1, tours_fge_insuffisant,
   };
 }
 
@@ -351,9 +404,21 @@ export function monteCarlo(p, nRuns, graineBase) {
   const acc = { pnlOp: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [],
                 interetsSfd: [], primes: [], surplusEnchere: [], fgeProvisions: [], fgeSaisies: [], couvertFge: [], couvertSfd: [], avanceCumulee: [],
                 remunEpargnants: [], remunParEpargnant: [], nEpargnants: [], interetsDepots: [] };
-  let expoProfil = null;
+  let expoProfil = null, vulnProfil = null;
+  const toursFgeInsuffisant = [];
   for (let i = 0; i < nRuns; i++) {
     const r = simulerRun(p, graineBase + i);
+    toursFgeInsuffisant.push(r.tours_fge_insuffisant);
+    // profil de vulnérabilité cycle 1 : moyenne par tour de l'expo nette, FGE dispo, vuln, % d'alertes
+    if (r.vulnCycle1 && r.vulnCycle1.length) {
+      if (!vulnProfil) vulnProfil = r.vulnCycle1.map(v => ({ tour: v.tour, expoNette: 0, fgeDispo: 0, couvertureDispo: 0, perteMax: 0, vuln: 0, partAlerte: 0 }));
+      r.vulnCycle1.forEach((v, j) => {
+        const a = vulnProfil[j]; if (!a) return;
+        a.expoNette += v.expoNette / nRuns; a.fgeDispo += v.fgeDispo / nRuns;
+        a.couvertureDispo += v.couvertureDispo / nRuns; a.perteMax += v.perteMax / nRuns;
+        a.vuln += v.vuln / nRuns; a.partAlerte += (v.alerte ? 1 : 0) / nRuns;
+      });
+    }
     acc.pnlOp.push(r.pnlOp); acc.continuite.push(r.continuiteOk ? 1 : 0); acc.residuel.push(r.residuel);
     acc.perteSfd.push(r.perteSfd); acc.expoMax.push(r.expoMax); acc.fuites.push(r.nFuites);
     acc.coutTour1.push(r.coutTour1); acc.margePool.push(r.margePool); acc.nGratuits.push(r.nGratuits);
@@ -369,6 +434,8 @@ export function monteCarlo(p, nRuns, graineBase) {
   ag.taux_continuite = mean(acc.continuite);
   ag.p_promesse_cassee = acc.residuel.filter(x => x > 1e-6).length / nRuns;
   ag.expoProfil = expoProfil;
+  ag.vulnProfil = vulnProfil;                              // courbe de vulnérabilité cycle 1 (moy par tour)
+  ag.toursFgeInsuffisantMoy = mean(toursFgeInsuffisant);   // nb moyen de tours à découvert (cycle 1)
   ag._pertes = acc.perteSfd;
   ag._pnls = acc.pnlOp;
   return ag;
