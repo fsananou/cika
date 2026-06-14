@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js';
+import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=15';
 
 const fmt = x => Math.round(x).toLocaleString('fr-FR');
 const fmtM = x => Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k';
