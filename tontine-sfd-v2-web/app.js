@@ -158,7 +158,12 @@ function renderKPIs(a, p) {
 // décomposition du coût membre par tour (tableau)
 function renderCoutDecompo(p) {
   const rows = decompositionCout(p);
-  const tb = rows.map(r => `<tr><td>T${r.tour}</td><td>${fmt(r.interets)}</td><td>${fmt(r.prime)}</td><td>${fmt(r.marge)}</td><td><b>${fmt(r.total)}</b></td><td>${(r.total / r.pot * 100).toFixed(0)}%</td></tr>`).join('');
+  const tb = rows.map(r => {
+    if (r.type === 'épargnant') {
+      return `<tr class="eparg-row"><td>T${r.tour} <span class="tag-ep">épargnant</span></td><td colspan="4" class="muted">ne paie rien — reçoit le pot + une rémunération</td><td class="g">0%</td></tr>`;
+    }
+    return `<tr><td>T${r.tour} <span class="tag-emp">emprunteur</span></td><td>${fmt(r.interets)}</td><td>${fmt(r.prime)}</td><td>${fmt(r.marge)}</td><td><b>${fmt(r.total)}</b></td><td>${(r.total / r.pot * 100).toFixed(0)}%</td></tr>`;
+  }).join('');
   $('coutDecompo').innerHTML = `<table class="data"><thead><tr><th>Tour</th><th>Intérêts SFD</th><th>Prime garantie</th><th>Marge Op.</th><th>Total payé</th><th>% pot</th></tr></thead><tbody>${tb}</tbody></table>`;
 }
 

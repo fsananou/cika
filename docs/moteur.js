@@ -377,14 +377,21 @@ export function monteCarlo(p, nRuns, graineBase) {
 // ---- décomposition du coût membre par tour (déterministe, pour affichage) ----
 export function decompositionCout(p) {
   const m = p.m_membres, pot = (m - 1) * p.c, rSfd = rSfdMensuel(p);
+  const seuilEmp = p.deux_populations ? Math.max(0, Math.min(m, Math.round(m / 2) + p.x_tours_emprunteurs)) : m;
   const rows = [];
   for (let slot = 0; slot < m; slot++) {
-    const duree = Math.max(1, m - (slot + 1));
-    const avance = Math.max(0, pot - slot * p.c);
-    const interets = pot * rSfd * duree;
-    const prime = (p.mode === 'garantie' && p.prime_active && avance > 0) ? primeGarantie(avance, duree, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
-    const marge = p.mode === 'garantie' ? p.prime_operateur_taux * pot : 0;
-    rows.push({ tour: slot + 1, interets, prime, marge, total: interets + prime + marge, pot });
+    if (p.deux_populations && slot >= seuilEmp) {
+      // ÉPARGNANT : ne paie RIEN. Reçoit le pot + une rémunération (bonus).
+      rows.push({ tour: slot + 1, type: 'épargnant', interets: 0, prime: 0, marge: 0, total: 0, pot });
+    } else {
+      // EMPRUNTEUR : intérêts + prime + marge.
+      const duree = Math.max(1, m - (slot + 1));
+      const avance = Math.max(0, pot - slot * p.c);
+      const interets = pot * rSfd * duree;
+      const prime = (p.mode === 'garantie' && p.prime_active && avance > 0) ? primeGarantie(avance, duree, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
+      const marge = p.mode === 'garantie' ? p.prime_operateur_taux * pot : 0;
+      rows.push({ tour: slot + 1, type: 'emprunteur', interets, prime, marge, total: interets + prime + marge, pot });
+    }
   }
   return rows;
 }
