@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=18';
+import { DEFAUTS, monteCarlo, decompositionCout, journalPool } from './moteur.js?v=19';
 
 // mode unitaire : quand la cotisation = 1, on lit les montants en multiples de cotisation (×c)
 const unitaire = () => PARAMS && PARAMS.c === 1;
@@ -12,17 +12,15 @@ const $ = id => document.getElementById(id);
 let PARAMS = { ...DEFAUTS, _runs: 80 };
 
 // ---- navigation : 2 onglets (Paramètres / Résultats) ----
-document.querySelectorAll('#ongletSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.remove('active'));
-  b.classList.add('active');
-  const onglet = b.dataset.onglet;
+function montrerOnglet(onglet) {
+  document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.onglet === onglet));
   $('vue-parametres').hidden = (onglet !== 'parametres');
   $('vue-resultats').hidden = (onglet !== 'resultats');
-}));
-function allerResultats() {
-  document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.onglet === 'resultats'));
-  $('vue-parametres').hidden = true; $('vue-resultats').hidden = false;
+  $('vue-flux').hidden = (onglet !== 'flux');
+  if (onglet === 'flux') renderFlux();
 }
+document.querySelectorAll('#ongletSeg .seg-btn').forEach(b => b.addEventListener('click', () => montrerOnglet(b.dataset.onglet)));
+function allerResultats() { montrerOnglet('resultats'); }
 
 // ============ SCHÉMA DE TOUS LES PARAMÈTRES ============
 const SCHEMA = [
@@ -65,6 +63,7 @@ const SCHEMA = [
     { k: 'fge_actif', nom: 'FGE (fonds de garantie)', d: "Le fonds endogène (primes + saisies) qui absorbe en premier.", t: 'bool' },
     { k: 'tranche_sfd_active', nom: 'Tranche SFD', d: "La SFD absorbe après le FGE (sa peau dans le jeu).", t: 'bool' },
     { k: 'plafond_tranche_sfd_frac', nom: 'Plafond tranche SFD', d: "Jusqu'où la SFD couvre, en % des avances. Au-delà = résiduel.", t: 'range', min: 0.01, max: 0.15, step: 0.01, fmt: 'pct' },
+    { k: 'fge_mutualise', nom: 'FGE mutualisé entre pools', d: "Non = chaque pool autonome (la solidité ne dépend que du pool, cadre « 1 pool »). Oui = un pool sain peut renflouer un pool en fuite.", t: 'bool' },
   ]},
   { grp: 'Règles cycle 1', desc: "Le cycle 1 démarre FGE vide : accès filtré par score + seuil de déclenchement.", items: [
     { k: 'cycle1_scoring_actif', nom: 'Accès filtré par score', d: "Au cycle 1, n'autorise à emprunter tôt que les scores élevés (seuil décroissant du tour 1 à M/2).", t: 'bool' },
@@ -171,15 +170,17 @@ function kpiV(o, fmtf) { return `${fmtf(o.moy)} <span class="pp">[${fmtf(o.p5)}�
 
 function renderKPIs(a, p) {
   const pot = (p.m_membres - 1) * p.c;
+  const np = Math.max(1, p.n_pools);
+  const tcp = a.taux_continuite_pool ?? a.taux_continuite;
   const items = [
-    { l: 'Promesse tenue', v: pct(a.taux_continuite), c: a.taux_continuite >= 0.999 ? 'ok' : 'bad', s: 'tous les tours servis' },
-    { l: 'P&L brut Opérateur', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pool${p.n_pools > 1 ? 's' : ''} · primes + surplus` },
-    { l: 'Revenu / pool', v: kpiV(a.margePool, fmtM), c: 'brand', s: 'brut, hors coûts' },
-    { l: 'Risque porté SFD', v: kpiV(a.perteSfd, fmtM), c: 'brand', s: 'avances non récupérées' },
+    { l: 'Promesse tenue / pool', v: pct(tcp), c: tcp >= 0.999 ? 'ok' : tcp >= 0.99 ? 'brand' : 'bad', s: 'tours servis dans un pool' },
+    { l: 'P&L brut / pool', v: kpiV(a.margePool, fmtM), c: a.margePool.moy > 0 ? 'ok' : 'bad', s: 'primes + surplus, par pool' },
+    { l: 'Risque SFD / pool', v: fmtM(a.perteSfd.moy / np), c: 'brand', s: 'avances non récupérées' },
     { l: 'Coût membre tour 1', v: pct(a.coutTour1.moy / pot), c: a.coutTour1.moy / pot < 0.2 ? 'ok' : 'brand', s: 'le dernier tour ≈ 0' },
-    { l: 'Fuites moyennes', v: kpiV(a.fuites, x => Math.round(x).toString()), c: 'brand', s: 'bénéficiaires disparus' },
+    { l: 'Fuites / pool', v: (a.fuites.moy / np).toFixed(2), c: 'brand', s: 'bénéficiaires disparus' },
     { l: 'Rémunération épargnant', v: kpiV(a.remunParEpargnant, fmtM), c: 'ok', s: 'bonus du membre patient' },
     { l: 'Tours à découvert (cy.1)', v: (a.toursFgeInsuffisantMoy ?? 0).toFixed(1), c: (a.toursFgeInsuffisantMoy ?? 0) < 0.5 ? 'ok' : 'bad', s: 'couverture < pire fuite' },
+    { l: 'P&L brut total', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${np} pool${np > 1 ? 's' : ''}` },
   ];
   $('kpiGrid').innerHTML = items.map(i => `<div class="kpi"><div class="lbl">${i.l}</div><div class="val ${i.c}">${i.v}</div><small>${i.s}</small></div>`).join('');
 }
@@ -215,11 +216,12 @@ function renderTableauScenarios() {
   const base = { ...PARAMS };
   const rows = Object.keys(PRESETS).map(s => {
     const p = { ...DEFAULTS_SANS_STRESS(base), ...PRESETS[s] };
+    const np = Math.max(1, p.n_pools);
     const a = monteCarlo(p, Math.min(60, PARAMS._runs), 12345);
     const pot = (p.m_membres - 1) * p.c;
-    return { s, nom: noms[s], cont: a.taux_continuite, pnl: a.pnlOp.moy, perte: a.perteSfd.moy, cout: a.coutTour1.moy / pot, fuites: a.fuites.moy };
+    return { s, nom: noms[s], cont: a.taux_continuite_pool ?? a.taux_continuite, pnl: a.margePool.moy, perte: a.perteSfd.moy / np, cout: a.coutTour1.moy / pot, fuites: a.fuites.moy / np };
   });
-  $('tableauScen').innerHTML = `<table class="data"><thead><tr><th>Scénario</th><th>Promesse</th><th>P&L brut</th><th>Risque SFD</th><th>Coût T1</th><th>Fuites</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.nom}</td><td class="${r.cont >= 0.999 ? 'g' : 'r'}">${pct(r.cont)}</td><td class="g">${fmtM(r.pnl)}</td><td>${fmtM(r.perte)}</td><td>${pct(r.cout)}</td><td>${Math.round(r.fuites)}</td></tr>`).join('')}</tbody></table>`;
+  $('tableauScen').innerHTML = `<table class="data"><thead><tr><th>Scénario</th><th>Promesse/pool</th><th>P&L/pool</th><th>Risque/pool</th><th>Coût T1</th><th>Fuites/pool</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.nom}</td><td class="${r.cont >= 0.999 ? 'g' : r.cont >= 0.99 ? '' : 'r'}">${pct(r.cont)}</td><td class="g">${fmtM(r.pnl)}</td><td>${fmtM(r.perte)}</td><td>${pct(r.cout)}</td><td>${r.fuites.toFixed(2)}</td></tr>`).join('')}</tbody></table>`;
 }
 function DEFAULTS_SANS_STRESS(base) { return { ...base, comportemental_actif: false, macro_actif: false, choc_fuite: 0, z_choc: 0, z_persistance: 0, bascule_urgents: 0 }; }
 
@@ -270,6 +272,35 @@ function drawVuln(a, p) {
     `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> couverture disponible (FGE + tranche SFD)</span>` +
     `<span class="lg-note">${nAlerte === 0 ? 'Aucun tour à découvert : la couverture absorbe toujours la pire fuite, même FGE vide.' : nAlerte + ' tour(s) où une seule fuite épuiserait la couverture disponible.'}</span>`;
 }
+
+// ---- page FLUX : déroulé d'un pool, tour par tour ----
+let fluxGraine = 101;
+const ACTEUR_CLS = { SFD: 'a-sfd', FGE: 'a-fge', Opérateur: 'a-op', Dépôt: 'a-depot', Épargnants: 'a-ep', Membres: 'a-mb', Groupe: 'a-mb' };
+const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos' };
+
+function renderFlux() {
+  const j = journalPool({ ...PARAMS }, fluxGraine);
+  const nFuites = j.tours.reduce((s, tr) => s + tr.mvt.filter(m => m.type === 'fuite').length, 0);
+  $('fluxResume').textContent = `Pool de ${j.m} membres · ${j.cycles} cycle${j.cycles > 1 ? 's' : ''} (${j.totalTours} tours) · pot = ${fmtM(j.pot)} · ${nFuites} fuite${nFuites !== 1 ? 's' : ''}, ${j.nRempl} remplacement${j.nRempl !== 1 ? 's' : ''}. Les flux suivent la mécanique exacte du moteur ; la fuite est tirée au hasard selon les paramètres.`;
+
+  let html = '', cycleVu = 0;
+  for (const tr of j.tours) {
+    if (tr.cycle !== cycleVu) { cycleVu = tr.cycle; html += `<div class="flux-cycle">Cycle ${tr.cycle}</div>`; }
+    const aFuite = tr.mvt.some(m => m.type === 'fuite');
+    const lignes = tr.mvt.map(m => {
+      const cls = ACTEUR_CLS[m.acteur] || 'a-mb';
+      const signe = m.montant === 0 ? '' : (TYPE_SIGNE[m.type] === 'neg' || m.montant < 0 ? 'neg' : 'pos');
+      const montant = m.montant === 0 ? '' : `<span class="flux-montant ${signe}">${m.montant > 0 ? '+' : ''}${fmtM(m.montant)}</span>`;
+      return `<div class="flux-ligne"><span class="flux-acteur ${cls}">${m.acteur}</span><span class="flux-lib">${m.libelle}</span>${montant}</div>`;
+    }).join('');
+    html += `<div class="flux-tour${aFuite ? ' a-fuite' : ''}">
+      <div class="flux-tour-hd"><span class="flux-t">Tour ${tr.tour}</span><span class="flux-phase ${tr.phase === 'emprunteur' ? 'ph-emp' : 'ph-ep'}">${tr.phase}</span>
+        <span class="flux-soldes">dépôt ${fmtM(tr.depot)} · FGE ${fmtM(tr.fge)} · encours SFD ${fmtM(tr.expo)}</span></div>
+      ${lignes}</div>`;
+  }
+  $('fluxJournal').innerHTML = html;
+}
+$('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux(); });
 
 // ---- init ----
 PARAMS._runs = 80;

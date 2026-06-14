@@ -16,6 +16,7 @@
     <div class="seg" id="ongletSeg">
       <button class="seg-btn active" data-onglet="parametres">Paramètres</button>
       <button class="seg-btn" data-onglet="resultats">Résultats</button>
+      <button class="seg-btn" data-onglet="flux">Flux</button>
     </div>
   </div>
 </nav>
@@ -57,7 +58,7 @@
     <div class="kpi-grid" id="kpiGrid"></div>
 
     <div class="card">
-      <h3>Comparaison des scénarios <span class="hint">la promesse tient partout</span></h3>
+      <h3>Comparaison des scénarios <span class="hint">tout est ramené à un pool</span></h3>
       <div id="tableauScen" class="table-wrap"></div>
     </div>
 
@@ -78,13 +79,27 @@
     </div>
 
     <div class="card chart-card">
-      <h3>Courbe de vulnérabilité — cycle 1 <span class="hint">FGE en constitution · perte max d'une fuite vs couverture disponible</span></h3>
+      <h3>Courbe de vulnérabilité — cycle 1 (par pool) <span class="hint">FGE en constitution · pire fuite d'un pool vs sa couverture disponible</span></h3>
       <canvas id="vulnCanvas" width="1020" height="220"></canvas>
       <div id="vulnLegende" class="vuln-legende"></div>
     </div>
   </section>
 </main>
 
-<script type="module" src="app.js?v=18"></script>
+<!-- ============ ONGLET FLUX (déroulé des mouvements d'un pool) ============ -->
+<main id="vue-flux" hidden>
+  <section class="wrap">
+    <div class="flux-head">
+      <div>
+        <h3 class="flux-titre">Déroulé d'un pool, tour par tour</h3>
+        <p class="flux-sub" id="fluxResume"></p>
+      </div>
+      <button id="btnFluxReroll" class="btn ghost">Autre tirage</button>
+    </div>
+    <div id="fluxJournal"></div>
+  </section>
+</main>
+
+<script type="module" src="app.js?v=19"></script>
 </body>
 </html>

@@ -47,6 +47,9 @@ export const DEFAUTS = {
   garantie_enchere_active: true, g_cotisations: 1,
   prime_active: true, fge_actif: true,
   tranche_sfd_active: true, plafond_tranche_sfd_frac: 0.15,
+  // FGE/tranche SFD isolés par pool (défaut) : la solidité d'un pool ne dépend que de lui-même.
+  // true = mutualisés entre tous les pools (un pool sain peut renflouer un pool en fuite).
+  fge_mutualise: false,
   // RÈGLES CYCLE 1 : accès filtré par score décroissant (P90 au tour 1 -> P50 au tour M/2),
   // seuil de déclenchement de l'enchère (alpha), suivi explicite du FGE en constitution.
   cycle1_scoring_actif: true,
@@ -127,10 +130,21 @@ export function simulerRun(p, graine) {
       const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true; // accès phase emprunteurs
       return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
     });
-    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0 });
+    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0 });
   }
 
-  let fge = 0, trancheSfdUtilisee = 0, fgeProvisions = 0, fgeSaisies = 0;
+  // FGE et tranche SFD : ISOLÉS par pool (défaut) ou MUTUALISÉS entre pools.
+  // Isolé = la solidité d'un pool ne dépend QUE de lui-même (cadre « 1 pool »).
+  const mutu = !!p.fge_mutualise;
+  let fgeGlob = 0, trancheGlob = 0;
+  const getFge = pid => mutu ? fgeGlob : comptes[pid].fge;
+  const addFge = (pid, x) => { if (mutu) fgeGlob += x; else comptes[pid].fge += x; };
+  const getTranche = pid => mutu ? trancheGlob : comptes[pid].trancheUtil;
+  const addTranche = (pid, x) => { if (mutu) trancheGlob += x; else comptes[pid].trancheUtil += x; };
+  // assiette du plafond de tranche SFD : portefeuille entier si mutualisé, sinon le pool seul
+  const assietteTranche = pid => mutu ? comptes.reduce((s, c) => s + c.decaisseCumule, 0) : comptes[pid].decaisseCumule;
+
+  let fgeProvisions = 0, fgeSaisies = 0;
   let primes = 0, surplusEnchere = 0, interetsSfd = 0, avanceCumulee = 0;
   let couvertFge = 0, couvertSfd = 0, residuel = 0, perteSfd = 0, nFuites = 0, nGratuits = 0;
   let coutTour1 = 0, continuiteOk = true;
@@ -170,11 +184,11 @@ export function simulerRun(p, graine) {
             mb.aFui = true; nFuites++;
             let trou = 0;
             for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
-            if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; fgeSaisies += mb.consign; mb.consign = 0; }
+            if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
             let reste = trou;
-            const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; fge -= pf2; reste -= pf2; couvertFge += pf2;
-            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1) * nPools; const dispo = Math.max(0, plaf - trancheSfdUtilisee); const ps = Math.min(dispo, reste); trancheSfdUtilisee += ps; reste -= ps; couvertSfd += ps; perteSfd += ps; }
-            if (reste > 1e-9) { residuel += reste; continuiteOk = false; }
+            const pf2 = p.fge_actif ? Math.min(getFge(pid), reste) : 0; addFge(pid, -pf2); reste -= pf2; couvertFge += pf2;
+            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, reste); addTranche(pid, ps); reste -= ps; couvertSfd += ps; perteSfd += ps; }
+            if (reste > 1e-9) { residuel += reste; continuiteOk = false; comptes[pid].casse = true; }
           }
         }
       }
@@ -219,7 +233,7 @@ export function simulerRun(p, graine) {
             const bidSurplusPlaf = Math.min(bidSurplusWtp, p.bid_plafond_frac_pot * pot);
             let surplus = bideur ? Math.max(0, Math.min(bidSurplusPlaf - coutObl, p.bid_plafond_frac_pot * pot)) : 0;
             bid = coutObl + surplus; net = Math.max(0, pot - bid);
-            interetsSfd += interets; primes += margeOp; fgeProvisions += primeGar; fge += primeGar; avanceCumulee += net;
+            interetsSfd += interets; primes += margeOp; fgeProvisions += primeGar; addFge(pid, primeGar); avanceCumulee += net;
             // le surplus de bid : une part aux épargnants (rémunération), le reste à l'Opérateur
             const partEp = (p.deux_populations ? p.part_bids_aux_epargnants : 0) * surplus;
             surplusEnchere += (surplus - partEp);
@@ -253,9 +267,9 @@ export function simulerRun(p, graine) {
           const pris = Math.min(cpt.depot, pot); cpt.depot -= pris;
           let complement = pot - pris;
           if (complement > 1e-9) {
-            const pf = p.fge_actif ? Math.min(fge, complement) : 0; fge -= pf; complement -= pf; couvertFge += pf;
-            if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1) * nPools; const dispo = Math.max(0, plaf - trancheSfdUtilisee); const ps = Math.min(dispo, complement); trancheSfdUtilisee += ps; complement -= ps; couvertSfd += ps; perteSfd += ps; }
-            if (complement > 1e-9) { residuel += complement; continuiteOk = false; }
+            const pf = p.fge_actif ? Math.min(getFge(pid), complement) : 0; addFge(pid, -pf); complement -= pf; couvertFge += pf;
+            if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, complement); addTranche(pid, ps); complement -= ps; couvertSfd += ps; perteSfd += ps; }
+            if (complement > 1e-9) { residuel += complement; continuiteOk = false; comptes[pid].casse = true; }
           }
           gagnant.recu += pot;
         }
@@ -264,23 +278,26 @@ export function simulerRun(p, graine) {
       for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; }
       exposMois[t - 1] += cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     }
-    // --- COURBE DE VULNÉRABILITÉ CYCLE 1 (FGE en constitution) ---
-    // À la fin du tour t, on mesure l'exposition nette du portefeuille (avances en cours non
-    // récupérées) face au FGE disponible. Tant que le FGE se constitue (cycle 1), on logue
-    // les tours où la couverture disponible est inférieure à la plus grosse perte d'une fuite.
+    // --- COURBE DE VULNÉRABILITÉ CYCLE 1 (FGE en constitution), RAMENÉE À UN POOL ---
+    // Tout est exprimé PAR POOL pour que la lecture ne dépende pas du nombre de pools :
+    // couverture moyenne d'un pool (FGE + tranche SFD dispo) face à la pire fuite d'un pool.
     if (t <= m) {
-      const expoNette = exposMois[t - 1];
-      // plus grosse perte d'une fuite unique au tour suivant (pire avance individuelle en cours)
-      let perteMax = 0;
+      const expoNette = exposMois[t - 1] / nPools;          // encours moyen par pool
+      // pire fuite d'un pool : la plus grosse avance en cours, mesurée pool par pool puis moyennée
+      let perteMaxParPool = 0;
+      let fgeDispoTot = 0, plafTrancheTot = 0;
       for (let pid = 0; pid < nPools; pid++) {
-        for (const pr of comptes[pid].prets) if (pr.actif && pr.restant > perteMax) perteMax = pr.restant;
+        let pmax = 0; for (const pr of comptes[pid].prets) if (pr.actif && pr.restant > pmax) pmax = pr.restant;
+        perteMaxParPool += pmax / nPools;
+        fgeDispoTot += getFge(pid);
+        if (p.tranche_sfd_active) plafTrancheTot += Math.max(0, p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1) - getTranche(pid));
       }
-      const plafTranche = p.tranche_sfd_active
-        ? Math.max(0, p.plafond_tranche_sfd_frac * Math.max(comptes.reduce((s, c) => s + c.decaisseCumule, 0), 1) - trancheSfdUtilisee)
-        : 0;
-      const fgeDispo = fge;                       // première perte, hors capital fintech
+      // en mutualisé, getFge/getTranche renvoient le global pour chaque pid -> on corrige par /nPools
+      const fgeDispo = (mutu ? fgeGlob : fgeDispoTot) / nPools;
+      const plafTranche = (mutu ? (p.tranche_sfd_active ? Math.max(0, p.plafond_tranche_sfd_frac * Math.max(comptes.reduce((s, c) => s + c.decaisseCumule, 0), 1) - trancheGlob) : 0) : plafTrancheTot) / nPools;
       const couvertureDispo = fgeDispo + plafTranche;
-      const alerte = couvertureDispo < perteMax;  // une seule fuite épuiserait la couverture dispo
+      const perteMax = perteMaxParPool;
+      const alerte = couvertureDispo < perteMax;  // une seule fuite épuiserait la couverture d'un pool
       if (alerte) tours_fge_insuffisant++;
       vulnCycle1.push({ tour: t, expoNette, fgeDispo, couvertureDispo, perteMax, vuln: Math.max(0, perteMax - couvertureDispo), alerte });
     }
@@ -302,8 +319,13 @@ export function simulerRun(p, graine) {
   const margePool = nPools ? (revenus - coutAcq - coutOps) / nPools : 0;
   const breakEven = coutsFixes <= 0 ? (margePool > 1e-9 ? 0 : Infinity) : (margePool > 1e-9 ? coutsFixes / margePool : Infinity);
 
+  // continuité PAR POOL : fraction des pools qui tiennent leur promesse (indépendant du nb de pools)
+  const poolsCasses = comptes.filter(c => c.casse).length;
+  const tauxContinuitePool = nPools ? 1 - poolsCasses / nPools : 1;
+
   return {
     nPools, nFuites, continuiteOk, residuel, perteSfd, coutTour1, nGratuits,
+    poolsCasses, tauxContinuitePool,
     couvertFge, couvertSfd, fgeProvisions, fgeSaisies, primes, surplusEnchere, interetsSfd, avanceCumulee,
     remunEpargnants: totalRemun, remunParEpargnant, nEpargnants, interetsDepots,
     expoMois: exposMois, expoMax: Math.max(...exposMois),
@@ -312,91 +334,159 @@ export function simulerRun(p, graine) {
   };
 }
 
-// ---- simulation d'UN pool avec journal détaillé (pour l'animation pédagogique) ----
-export function simulerPoolDetail(p, graine) {
+// ---- JOURNAL DES FLUX d'UN pool (fidèle à simulerRun), pour la page Flux ----
+// Émet une liste de mouvements horodatés (tour) avec le solde courant du dépôt commun et du FGE.
+// Couvre : cotisations, enchère, avance SFD (crédit-relais), prime -> FGE, intérêts SFD,
+// service épargnant, fuite + cascade de couverture (FGE -> tranche SFD -> résiduel) + remplacement.
+export function journalPool(p, graine) {
   const rng = mulberry32(graine);
   const m = p.m_membres, totalTours = m * p.n_cycles, vie = totalTours;
   const pot = (m - 1) * p.c, rSfd = rSfdMensuel(p);
-  // noms simples pour l'animation
   const NOMS = ["Awa", "Koffi", "Mariam", "Ibrahim", "Fanta", "Sékou", "Aïcha", "Moussa", "Rama", "Yao", "Bintou", "Diallo", "Nana", "Oumar", "Salif"];
-  function pref() { const r = rng(); if (r < p.part_urgent) return ["urgent", p.urg_urgent]; if (r < p.part_urgent + p.part_modere) return ["modere", p.urg_modere]; return ["epargnant", p.urg_epargnant]; }
+  const REMPL = ["Adjo", "Kossi", "Afia", "Komla", "Esi", "Kofi", "Ama", "Yaw", "Akos", "Kwame"];
+  function pref() { const r = rng(); if (r < p.part_urgent) return ["urgent", p.urg_urgent]; if (r < p.part_urgent + p.part_modere) return ["modéré", p.urg_modere]; return ["épargnant", p.urg_epargnant]; }
   const profs = tirerProfils(rng, m, p);
-  const membres = profs.map((pr, i) => { let [tp, urg] = pref(); return { i, nom: NOMS[i % NOMS.length], seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist: rng() < p.part_avec_historique, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, bidPaye: 0 }; });
-  const cpt = { prets: [], decaisseCumule: 0 };
-  let fge = 0, trancheUtil = 0;
+  const membres = profs.map((pr, i) => {
+    let [tp, urg] = pref();
+    if (p.comportemental_actif && (tp === "modéré" || tp === "épargnant") && rng() < p.bascule_urgents) { tp = "urgent"; urg = p.urg_urgent; }
+    const aHist = rng() < p.part_avec_historique;
+    const declareEmp = rng() < p.part_emprunteurs_declares;
+    return { i, nom: NOMS[i % NOMS.length], seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist,
+             candidatEmp: p.deux_populations ? (declareEmp && aHist) : true, estEpargnant: false,
+             aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remplacant: null };
+    });
+  membres.forEach(mb => mb.score = -mb.seuil + (mb.aHist ? 0.5 : 0));
+  const cpt = { prets: [], decaisseCumule: 0, depot: 0 };
+  let fge = 0, trancheUtil = 0, nRempl = 0;
   const etatZ = {};
-  const journal = [];
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
+  const rDepotMensuel = (p.r_depot_annuel || 0) / 12;
+  const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
+
+  function seuilScorePool(slot) {
+    if (!p.cycle1_scoring_actif) return -Infinity;
+    const mid = Math.max(1, Math.round(m / 2)); if (slot >= mid) return -Infinity;
+    const frac = slot / mid, pct = p.cycle1_pct_t1 + (p.cycle1_pct_mid - p.cycle1_pct_t1) * frac;
+    return quantile(membres.map(x => x.score).sort((a, b) => a - b), pct);
+  }
+
+  const tours = []; // { tour, cycle, slot, phase, mouvements:[{acteur,type,libelle,montant,depot,fge}] }
+  const flux = (arr, acteur, type, libelle, montant) => arr.push({ acteur, type, libelle, montant, depot: cpt.depot, fge });
 
   for (let t = 1; t <= totalTours; t++) {
-    const z = tirerZ(rng, p, etatZ), slot = (t - 1) % m;
+    const z = tirerZ(rng, p, etatZ), slot = (t - 1) % m, cycle = Math.floor((t - 1) / m) + 1;
     if (slot === 0) for (const mb of membres) if (!mb.aFui) mb.aEncaisse = false;
-    const ev = { tour: t, fuite: null, garantie: null };
+    const mvt = [];
 
-    // fuites
+    // 1. fuites (membres ayant encaissé) + cascade de couverture + remplacement
     for (const mb of membres) {
       if (mb.aEncaisse && !mb.aFui) {
         const moisR = Math.max(1, vie - mb.tEnc);
         const pf = probaFuite(p.p_fuite_base, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
         if (rng() < pf) {
-          mb.aFui = true; let trou = 0;
-          for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
-          if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; mb.consign = 0; }
-          ev.fuite = { membre: mb.i, nom: mb.nom, trou };
-          if (p.mode === "garantie") {
+          mb.aFui = true;
+          let trou = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
+          flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaissé T${mb.tEnc}) disparaît — avance non remboursée`, -trou);
+          if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
+          if (p.mode === 'garantie') {
             let reste = trou;
-            const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; fge -= pf2; reste -= pf2;
-            let prisSfd = 0;
-            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1); const dispo = Math.max(0, plaf - trancheUtil); prisSfd = Math.min(dispo, reste); trancheUtil += prisSfd; reste -= prisSfd; }
-            ev.garantie = { parFge: pf2, parSfd: prisSfd, residuel: Math.max(0, reste) };
+            const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; if (pf2 > 0) { fge -= pf2; reste -= pf2; flux(mvt, 'FGE', 'couverture', `FGE absorbe le trou (première perte)`, -pf2); }
+            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1); const dispo = Math.max(0, plaf - trancheUtil); const ps = Math.min(dispo, reste); if (ps > 0) { trancheUtil += ps; reste -= ps; flux(mvt, 'SFD', 'couverture', `tranche junior SFD absorbe le reliquat (peau dans le jeu)`, -ps); } }
+            if (reste > 1e-9) flux(mvt, '—', 'résiduel', `résiduel non couvert (promesse en tension)`, -reste);
           } else {
-            ev.garantie = { parFge: 0, parSfd: 0, residuel: trou };  // nue : le groupe perd
+            flux(mvt, 'Groupe', 'résiduel', `tontine nue : le groupe subit la perte`, -trou);
           }
+          // remplacement : un nouveau membre reprend le sous-compte et les cotisations restantes (règle de gestion)
+          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
+          mb.remplacant = nom;
+          flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} et reprend les cotisations à venir`, 0);
         }
       }
     }
-    // collecte
+
+    // 2. cotisations → dépôt commun
     const actifs = membres.filter(mb => !mb.aFui);
-    for (const mb of actifs) if (!mb.aEncaisse) mb.cotise += p.c;
-    // attribution
-    const elig = actifs.filter(mb => !mb.aEncaisse);
-    let eligBid = elig;
-    if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = elig.filter(mb => mb.aHist);
+    let potColl = 0, nCot = 0;
+    for (const mb of actifs) if (!mb.aEncaisse) { cpt.depot += p.c; potColl += p.c; mb.cotise += p.c; nCot++; }
+    // les fuyards remplacés cotisent aussi (le remplaçant paie)
+    for (const mb of membres) if (mb.aFui && mb.remplacant && !mb.aEncaisse) { cpt.depot += p.c; potColl += p.c; nCot++; }
+    flux(mvt, 'Membres', 'cotisation', `${nCot} cotisations versées au dépôt commun`, nCot * p.c);
+    if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; flux(mvt, 'SFD', 'rémunération', `intérêts versés sur le dépôt (rémunération de l'épargne)`, it); }
+
     const dureePret = Math.max(1, m - (slot + 1));
-    let gagnant = null, bideur = false, bidW = 0;
-    if (p.mode === "garantie") {
-      let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
-      if (best && bestW > 0.01 * pot) { gagnant = best; bideur = true; bidW = bestW; if (p.mitigation_active && p.garantie_enchere_active && slot < p.t_restreint) gagnant.consign = p.g_cotisations * p.c; }
-      else if (elig.length) { gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]); }
-    } else if (elig.length) { gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]); }
+    const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
+    let phase = phaseEmprunteur ? 'emprunteur' : 'épargnant';
 
-    let benefInfo = null;
-    if (gagnant) {
-      const avance = Math.max(0, pot - gagnant.cotise);
-      let bid = 0, net = pot;
-      if (p.mode === "garantie") {
-        const primeGar = p.prime_active ? primeGarantie(avance, dureePret, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
-        const interets = pot * rSfd * dureePret, margeOp = p.prime_operateur_taux * pot;
-        const coutObl = interets + primeGar + margeOp;
-        const bidPlaf = Math.min(bidW, p.bid_plafond_frac_pot * pot);
-        const surplus = bideur ? Math.max(0, Math.min(bidPlaf - coutObl, p.bid_plafond_frac_pot * pot)) : 0;
-        bid = coutObl + surplus; net = Math.max(0, pot - bid);
-        cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net; fge += primeGar;
-        benefInfo = { membre: gagnant.i, nom: gagnant.nom, recu: net, bid, bideur, prime: primeGar, interets, surplus };
+    // 3. attribution + décaissement
+    if (phaseEmprunteur) {
+      let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
+      const cycle1 = t <= m;
+      if (cycle1 && p.cycle1_scoring_actif) { const sMin = seuilScorePool(slot); elig = elig.filter(mb => mb.score >= sMin); }
+      const enchereOuverte = !(cycle1 && p.cycle1_scoring_actif) || (potColl >= p.alpha_declenchement * m * p.c);
+      let eligBid = enchereOuverte ? elig : [];
+      if (p.mode === 'garantie' && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
+      let gagnant = null, bideur = false, bidW = 0;
+      if (p.mode === 'garantie') {
+        let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
+        if (best && bestW > 0.01 * pot) { gagnant = best; bideur = true; bidW = bestW; if (p.mitigation_active && p.garantie_enchere_active && slot < p.t_restreint && gagnant.consign === 0) gagnant.consign = p.g_cotisations * p.c; }
+        else if (elig.length) gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]);
+      } else if (elig.length) gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]);
+
+      if (gagnant) {
+        const avance = Math.max(0, pot - gagnant.cotise);
+        let bid = 0, net = pot;
+        if (p.mode === 'garantie') {
+          const primeGar = p.prime_active ? primeGarantie(avance, dureePret, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
+          const interets = pot * rSfd * dureePret, margeOp = p.prime_operateur_taux * pot;
+          const coutObl = interets + primeGar + margeOp;
+          const bidPlaf = Math.min(bidW, p.bid_plafond_frac_pot * pot);
+          const surplus = bideur ? Math.max(0, Math.min(bidPlaf - coutObl, p.bid_plafond_frac_pot * pot)) : 0;
+          bid = coutObl + surplus; net = Math.max(0, pot - bid);
+          if (bideur) flux(mvt, gagnant.nom, 'enchère', `${gagnant.nom} remporte l'enchère (bid = ${Math.round(bid)})`, 0);
+          else flux(mvt, gagnant.nom, 'attribution', `${gagnant.nom} prend le tour (sans surenchère)`, 0);
+          flux(mvt, 'SFD', 'avance', `la SFD avance le net à ${gagnant.nom} (crédit-relais sur ${dureePret} mois)`, net);
+          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          flux(mvt, 'SFD', 'intérêts', `intérêts du crédit-relais (retenus dans le bid)`, interets);
+          if (primeGar > 0) { fge += primeGar; flux(mvt, 'FGE', 'prime', `prime de garantie de ${gagnant.nom} → FGE`, primeGar); }
+          flux(mvt, 'Opérateur', 'marge', `marge Opérateur (retenue dans le bid)`, margeOp);
+          if (surplus > 0) { const partEp = (p.deux_populations ? p.part_bids_aux_epargnants : 0) * surplus; if (partEp > 0) { cpt.depot += partEp; flux(mvt, 'Épargnants', 'rémunération', `part du surplus d'enchère reversée aux épargnants`, partEp); } flux(mvt, 'Opérateur', 'surplus', `surplus d'enchère conservé par l'Opérateur`, surplus - partEp); }
+        } else {
+          net = pot; cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          flux(mvt, gagnant.nom, 'attribution', `${gagnant.nom} prend le tour (tontine nue, sans frais)`, 0);
+          flux(mvt, 'SFD', 'avance', `la SFD avance le pot à ${gagnant.nom}`, net);
+        }
+        gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
       } else {
-        net = pot;
-        cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
-        benefInfo = { membre: gagnant.i, nom: gagnant.nom, recu: net, bid: 0, bideur: false, prime: 0, interets: 0, surplus: 0 };
+        flux(mvt, '—', 'gel', `aucune attribution ce tour (enchère non déclenchée / pas d'éligible)`, 0);
       }
-      gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net; gagnant.bidPaye += bid;
+    } else {
+      // PHASE ÉPARGNANTS : servis du plus sûr au moins sûr, payés depuis le dépôt (complément via cascade)
+      const eparg = actifs.filter(mb => !mb.aEncaisse);
+      if (eparg.length) {
+        let gagnant;
+        if (p.deux_populations) { eparg.sort((a, b) => a.aHist !== b.aHist ? (a.aHist ? -1 : 1) : a.seuil - b.seuil); gagnant = eparg[0]; }
+        else gagnant = eparg[Math.floor(rng() * eparg.length)];
+        gagnant.estEpargnant = true; gagnant.aEncaisse = true; gagnant.tEnc = t;
+        flux(mvt, gagnant.nom, 'service', `${gagnant.nom} (épargnant le plus sûr restant) reçoit le pot`, 0);
+        const pris = Math.min(cpt.depot, pot); cpt.depot -= pris; flux(mvt, 'Dépôt', 'service', `pot payé depuis le dépôt commun`, -pris);
+        let complement = pot - pris;
+        if (complement > 1e-9) {
+          const pf = p.fge_actif ? Math.min(fge, complement) : 0; if (pf > 0) { fge -= pf; complement -= pf; flux(mvt, 'FGE', 'couverture', `complément couvert par le FGE`, -pf); }
+          if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1); const dispo = Math.max(0, plaf - trancheUtil); const ps = Math.min(dispo, complement); if (ps > 0) { trancheUtil += ps; complement -= ps; flux(mvt, 'SFD', 'couverture', `complément couvert par la tranche SFD`, -ps); } }
+          if (complement > 1e-9) flux(mvt, '—', 'résiduel', `résiduel non couvert (promesse en tension)`, -complement);
+        }
+        gagnant.recu += pot;
+      }
     }
-    for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; }
 
-    // snapshot des états membres pour l'affichage
-    const snap = membres.map(mb => ({ nom: mb.nom, type: mb.type, aEncaisse: mb.aEncaisse, aFui: mb.aFui, estBenef: benefInfo && benefInfo.membre === mb.i }));
-    journal.push({ ...ev, benef: benefInfo, pot, snap });
+    // 4. récupération des prêts (rembourse le dépôt)
+    let recup = 0; for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; recup += pa; }
+    if (recup > 0.5) flux(mvt, 'Dépôt', 'recouvrement', `mensualités des crédits-relais récupérées sur le dépôt`, recup);
+
+    const expo = cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
+    tours.push({ tour: t, cycle, slot: slot + 1, phase, mvt, depot: cpt.depot, fge, expo });
   }
-  return { m, pot, journal };
+  return { m, pot, cycles: p.n_cycles, totalTours, tours, nRempl };
 }
 
 // ---- Monte Carlo ----
@@ -406,6 +496,7 @@ export function monteCarlo(p, nRuns, graineBase) {
                 remunEpargnants: [], remunParEpargnant: [], nEpargnants: [], interetsDepots: [] };
   let expoProfil = null, vulnProfil = null;
   const toursFgeInsuffisant = [];
+  let poolsTot = 0, poolsCassesTot = 0, contPoolRuns = [];
   for (let i = 0; i < nRuns; i++) {
     const r = simulerRun(p, graineBase + i);
     toursFgeInsuffisant.push(r.tours_fge_insuffisant);
@@ -419,6 +510,7 @@ export function monteCarlo(p, nRuns, graineBase) {
         a.vuln += v.vuln / nRuns; a.partAlerte += (v.alerte ? 1 : 0) / nRuns;
       });
     }
+    poolsTot += r.nPools; poolsCassesTot += r.poolsCasses; contPoolRuns.push(r.tauxContinuitePool);
     acc.pnlOp.push(r.pnlOp); acc.continuite.push(r.continuiteOk ? 1 : 0); acc.residuel.push(r.residuel);
     acc.perteSfd.push(r.perteSfd); acc.expoMax.push(r.expoMax); acc.fuites.push(r.nFuites);
     acc.coutTour1.push(r.coutTour1); acc.margePool.push(r.margePool); acc.nGratuits.push(r.nGratuits);
@@ -431,8 +523,11 @@ export function monteCarlo(p, nRuns, graineBase) {
   }
   const ag = {};
   for (const k of Object.keys(acc)) { const s = acc[k].slice().sort((a, b) => a - b); ag[k] = { moy: mean(acc[k]), p5: quantile(s, 0.05), p95: quantile(s, 0.95) }; }
-  ag.taux_continuite = mean(acc.continuite);
+  ag.taux_continuite = mean(acc.continuite);                         // proba qu'AUCUN pool ne casse (portefeuille)
   ag.p_promesse_cassee = acc.residuel.filter(x => x > 1e-6).length / nRuns;
+  // PAR POOL (indépendant du nb de pools) : proba qu'un pool donné tienne sa promesse
+  ag.taux_continuite_pool = mean(contPoolRuns);
+  ag.p_pool_casse = poolsTot ? poolsCassesTot / poolsTot : 0;
   ag.expoProfil = expoProfil;
   ag.vulnProfil = vulnProfil;                              // courbe de vulnérabilité cycle 1 (moy par tour)
   ag.toursFgeInsuffisantMoy = mean(toursFgeInsuffisant);   // nb moyen de tours à découvert (cycle 1)
