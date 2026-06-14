@@ -106,14 +106,34 @@ table.data td.num{font-weight:600}
 .vuln-legende .sw.line{height:3px}
 .vuln-legende .lg-note{flex-basis:100%;color:var(--ink);font-size:11px;margin-top:2px}
 
-/* page Cadrage du risque */
-.cadrage-grid{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 4px}
-.cadrage-grid label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.cadrage-grid .cadrage-hint{font-weight:400;text-transform:none;letter-spacing:0;color:var(--g400);font-size:10px}
-.cadrage-grid select{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink);background:#fff;min-width:120px}
-.cadrage-grid option{padding:2px 4px}
-.cadrage-note{color:var(--muted);font-size:11px;margin-top:8px}
-.cadrage-ctrls{margin-bottom:6px}
+/* page Cadrage du risque — bandes min–max (double curseur) */
+.cadrage-bandes{display:grid;grid-template-columns:1fr 1fr;gap:14px 36px;margin:6px 0 14px}
+@media(max-width:820px){.cadrage-bandes{grid-template-columns:1fr}}
+.bande-tete{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.bande-nom{font-size:12px;font-weight:600;color:var(--ink)}
+.bande-hint{font-size:10px;color:var(--g400)}
+.bande-val{margin-left:auto;font-size:11px;font-weight:700;color:var(--acc);font-variant-numeric:tabular-nums}
+.bande-rail{position:relative;height:22px}
+.bande-rail input[type=range]{position:absolute;top:0;left:0;width:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none;height:22px}
+.bande-rail input[type=range]::-webkit-slider-runnable-track{height:3px;background:var(--line);border-radius:2px}
+.bande-rail input[type=range]::-moz-range-track{height:3px;background:var(--line);border-radius:2px}
+.bande-rail input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;width:14px;height:14px;border-radius:50%;background:var(--acc);border:2px solid #fff;box-shadow:0 0 0 1px var(--acc);margin-top:-6px;cursor:pointer}
+.bande-rail input[type=range]::-moz-range-thumb{pointer-events:auto;width:14px;height:14px;border-radius:50%;background:var(--acc);border:2px solid #fff;cursor:pointer}
+
+/* encart meilleure config + lecture inverse */
+.cadrage-gagnante,.cadrage-cible-res{margin-top:4px}
+.cfg-titre{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.cfg-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:0;border-top:1px solid var(--line)}
+@media(max-width:820px){.cfg-grid{grid-template-columns:repeat(3,1fr)}}
+.cfg-kpi{padding:8px 14px 8px 0;border-right:1px solid var(--line);margin-right:14px}
+.cfg-kpi:last-child{border-right:none}
+.cfg-kpi .lbl{display:block;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.cfg-kpi .val{font-size:16px;font-weight:700;color:var(--ink)}
+.cfg-kpi .val.ok{color:var(--ok)}.cfg-kpi .val.bad{color:var(--bad)}
+.cadrage-cible{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.cadrage-cible>label{display:block;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.cadrage-cible output{color:var(--acc);font-size:12px;margin-left:6px}
+.cadrage-cible input[type=range]{width:100%;max-width:320px;accent-color:var(--acc);display:block;margin-top:4px}
 
 /* ---- page Flux ---- */
 .flux-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px}

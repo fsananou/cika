@@ -34,20 +34,30 @@
 <main id="vue-cadrage" hidden>
   <section class="wrap">
     <div class="card">
-      <h3>Cadrage du risque — paramètres soutenables</h3>
-      <p class="flux-sub">On fixe ce que la SFD accepte d'absorber (son skin in the game, en % du pot) et on cherche les paramètres de tontine soutenables : promesse maximale, sous la contrainte du <b>seuil d'usure UEMOA</b> (coût membre annualisé ≤ 24 %). Le calcul tourne par pool (Monte Carlo). On balaie la taille du pool (M), la part de profils sûrs et la durée.</p>
-      <div class="cadrage-ctrls" id="cadrageCtrls"></div>
-      <div class="run-actions"><button id="btnCadrage" class="btn big">Lancer le cadrage</button><span class="param-status" id="cadrageStatus"></span></div>
+      <h3>Cadrage du risque — optimisation</h3>
+      <p class="flux-sub">Définissez une <b>plage</b> à explorer pour chaque levier (min–max). L'optimiseur balaie toutes les combinaisons (Monte Carlo, par pool) et cherche celles qui <b>respectent le cap SFD</b> et le <b>seuil d'usure UEMOA</b> (≤ 24 %). Il en ressort la meilleure structure (M, cotisation, durée, profils) et la promesse atteinte — et, pour une promesse cible, le cap minimal nécessaire.</p>
+      <div id="cadrageBandes" class="cadrage-bandes"></div>
+      <div class="run-actions"><button id="btnCadrage" class="btn big">Lancer l'optimisation</button><button id="btnCadrageReset" class="btn ghost">Plages par défaut</button><span class="param-status" id="cadrageStatus"></span></div>
+    </div>
+
+    <div class="card" id="cadrageGagnanteCard" hidden>
+      <h3>Meilleure configuration <span class="hint">promesse maximale sous contraintes</span></h3>
+      <div id="cadrageGagnante" class="cadrage-gagnante"></div>
+      <div class="cadrage-cible">
+        <label>Promesse cible : <output id="cibleOut">95%</output>
+          <input type="range" id="cibleSlider" min="0.80" max="1" step="0.01" value="0.95"></label>
+        <div id="cadrageCible" class="cadrage-cible-res"></div>
+      </div>
     </div>
 
     <div class="card chart-card">
-      <h3>Frontière : cap SFD demandé → promesse atteignable <span class="hint">meilleure config par niveau de cap</span></h3>
+      <h3>Frontière : cap SFD → promesse atteignable <span class="hint">meilleure config par niveau de cap</span></h3>
       <canvas id="cadrageCanvas" width="1020" height="220"></canvas>
       <div id="cadrageLegende" class="vuln-legende"></div>
     </div>
 
     <div class="card">
-      <h3>Configurations optimales <span class="hint">triées par promesse · usure respectée</span></h3>
+      <h3>Configurations explorées <span class="hint">top 12 · usure respectée</span></h3>
       <div id="cadrageTable" class="table-wrap"></div>
     </div>
 

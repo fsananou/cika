@@ -313,57 +313,96 @@ function renderFlux() {
 }
 $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux(); });
 
-// ---- page CADRAGE DU RISQUE ----
-// On part des paramètres comportementaux/stress courants (PARAMS) et on balaie la structure
-// (M, part de sûrs, durée) pour chaque niveau de cap SFD. Contrainte d'usure UEMOA respectée.
-let cadrageCtrlsRendus = false;
-function renderCadrageCtrls() {
-  if (cadrageCtrlsRendus) return; cadrageCtrlsRendus = true;
-  $('cadrageCtrls').innerHTML = `
-    <div class="cadrage-grid">
-      <label>Cap SFD testés (% du pot)<span class="cadrage-hint">skin in the game</span>
-        <select id="cad_caps" multiple size="6">
-          ${[5,10,15,20,30,40].map(v => `<option value="${v / 100}" ${[10, 15, 20].includes(v) ? 'selected' : ''}>${v}%</option>`).join('')}
-        </select></label>
-      <label>Tailles de pool M
-        <select id="cad_Ms" multiple size="6">
-          ${[6, 8, 10, 12, 15].map(v => `<option value="${v}" ${[6, 8, 10, 12].includes(v) ? 'selected' : ''}>${v}</option>`).join('')}
-        </select></label>
-      <label>Part de profils sûrs
-        <select id="cad_surs" multiple size="6">
-          ${[40, 55, 70, 85].map(v => `<option value="${v / 100}" ${[55, 70, 85].includes(v) ? 'selected' : ''}>${v}%</option>`).join('')}
-        </select></label>
-      <label>Durée (cycles)
-        <select id="cad_durees" multiple size="6">
-          ${[1, 2, 3].map(v => `<option value="${v}" ${v === PARAMS.n_cycles ? 'selected' : ''}>${v}</option>`).join('')}
-        </select></label>
-      <label>Cibles de promesse
-        <select id="cad_cibles" multiple size="6">
-          ${[90, 95, 99].map(v => `<option value="${v / 100}" selected>${v}%</option>`).join('')}
-        </select></label>
-    </div>
-    <p class="cadrage-note">Le balayage utilise vos réglages de stress/comportement courants (taux de fuite, mitigations…). Modifiez-les dans l'onglet Paramètres pour cadrer dans d'autres conditions.</p>`;
+// ---- page CADRAGE DU RISQUE (optimiseur multi-leviers, bandes min–max) ----
+// Chaque levier se règle en PLAGE (min–max + pas auto). L'optimiseur balaie toutes les
+// combinaisons et cherche la meilleure structure respectant le cap SFD + l'usure UEMOA.
+const BANDES = [
+  { k: 'caps',       nom: 'Cap SFD (% du pot)',   hint: 'skin in the game', min: 0,   max: 0.50, pas: 0.05, lo: 0.05, hi: 0.25, fmt: 'pct' },
+  { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,   max: 20,   pas: 1,    lo: 6,    hi: 12,   fmt: 'int' },
+  { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,   max: 4,    pas: 1,    lo: 1,    hi: 2,    fmt: 'int' },
+  { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2, max: 1,    pas: 0.05, lo: 0.55, hi: 0.85, fmt: 'pct' },
+  { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1, max: 0.6,  pas: 0.05, lo: 0.30, hi: 0.30, fmt: 'pct' },
+];
+const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : '' + v;
+function rangeVals(b) { const out = []; for (let v = b.lo; v <= b.hi + 1e-9; v += b.pas) out.push(+v.toFixed(4)); return out.length ? out : [b.lo]; }
+
+function bandeRow(b) {
+  return `<div class="bande" data-k="${b.k}">
+    <div class="bande-tete"><span class="bande-nom">${b.nom}</span>${b.hint ? `<span class="bande-hint">${b.hint}</span>` : ''}<span class="bande-val" id="bv_${b.k}"></span></div>
+    <div class="bande-rail">
+      <input type="range" class="bande-lo" id="blo_${b.k}" min="${b.min}" max="${b.max}" step="${b.pas}" value="${b.lo}">
+      <input type="range" class="bande-hi" id="bhi_${b.k}" min="${b.min}" max="${b.max}" step="${b.pas}" value="${b.hi}">
+    </div></div>`;
 }
-const cadSel = id => Array.from($(id).selectedOptions).map(o => +o.value);
+function syncBande(b) {
+  let lo = +$('blo_' + b.k).value, hi = +$('bhi_' + b.k).value;
+  if (lo > hi) { [lo, hi] = [hi, lo]; $('blo_' + b.k).value = lo; $('bhi_' + b.k).value = hi; }
+  b.lo = lo; b.hi = hi;
+  const n = rangeVals(b).length;
+  $('bv_' + b.k).textContent = lo === hi ? fmtB(lo, b.fmt) : `${fmtB(lo, b.fmt)} → ${fmtB(hi, b.fmt)} · ${n} val.`;
+}
+let cadrageRendu = false;
+function renderCadrageCtrls() {
+  if (cadrageRendu) return; cadrageRendu = true;
+  $('cadrageBandes').innerHTML = BANDES.map(bandeRow).join('');
+  BANDES.forEach(b => {
+    ['blo_', 'bhi_'].forEach(pre => $(pre + b.k).addEventListener('input', () => { syncBande(b); }));
+    syncBande(b);
+  });
+}
+$('btnCadrageReset').addEventListener('click', () => {
+  const def = { caps: [0.05, 0.25], Ms: [6, 12], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30] };
+  BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
+});
 
 let dernierCadrage = null;
 function lancerCadrage() {
   $('btnCadrage').textContent = 'Calcul…'; $('cadrageStatus').textContent = '';
   setTimeout(() => {
-    const opts = {
-      caps: cadSel('cad_caps'), Ms: cadSel('cad_Ms'), partsSurs: cadSel('cad_surs'),
-      durees: cadSel('cad_durees'), cibles: cadSel('cad_cibles'), runs: 250,
-    };
-    const base = { ...PARAMS };
-    const r = cadrageRisque(base, opts);
+    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99] };
+    BANDES.forEach(b => { opts[b.k] = rangeVals(b); });
+    const r = cadrageRisque({ ...PARAMS }, opts);
     dernierCadrage = r;
     drawCadrage(r);
     renderCadrageTable(r);
-    $('btnCadrage').textContent = 'Lancer le cadrage';
+    renderCadrageGagnante(r);
+    $('btnCadrage').textContent = 'Lancer l\'optimisation';
     $('cadrageStatus').textContent = `${r.rows.length} configurations évaluées` + (r.tronque ? ' (tronqué à 2000)' : '');
   }, 20);
 }
 $('btnCadrage').addEventListener('click', lancerCadrage);
+
+// encart « meilleure config » + lecture inverse (promesse cible -> cap min + config)
+function renderCadrageGagnante(r) {
+  const ok = r.rows.filter(x => x.usureOk);
+  const best = ok.sort((a, b) => b.promesse - a.promesse)[0];
+  $('cadrageGagnanteCard').hidden = !best;
+  if (!best) return;
+  $('cadrageGagnante').innerHTML = cfgCard('Promesse maximale atteignable', best);
+  majCible();
+}
+function cfgCard(titre, x) {
+  return `<div class="cfg-titre">${titre}</div>
+    <div class="cfg-grid">
+      <div class="cfg-kpi"><span class="lbl">Promesse / pool</span><span class="val ${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span></div>
+      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${(x.capPot * 100).toFixed(0)}% du pot</span></div>
+      <div class="cfg-kpi"><span class="lbl">Taille M</span><span class="val">${x.M}</span></div>
+      <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cycle${x.duree > 1 ? 's' : ''}</span></div>
+      <div class="cfg-kpi"><span class="lbl">Profils sûrs</span><span class="val">${(x.partSurs * 100).toFixed(0)}%</span></div>
+      <div class="cfg-kpi"><span class="lbl">Usure (≤24%)</span><span class="val ${x.usure <= 0.24 ? 'ok' : 'bad'}">${(x.usure * 100).toFixed(1)}%</span></div>
+    </div>`;
+}
+function majCible() {
+  const r = dernierCadrage; if (!r) return;
+  const cible = +$('cibleSlider').value;
+  $('cibleOut').textContent = (cible * 100).toFixed(0) + '%';
+  const ok = r.rows.filter(x => x.usureOk && x.promesse >= cible);
+  if (!ok.length) { $('cadrageCible').innerHTML = `<p class="muted">Aucune configuration n'atteint ${(cible * 100).toFixed(0)}% sur les plages choisies — élargissez les bandes (cap, profils sûrs) ou baissez la cible.</p>`; return; }
+  // cap minimal qui atteint la cible, et la config la moins-disante (plus petit cap, puis plus petit M)
+  const best = ok.sort((a, b) => a.capPot - b.capPot || a.M - b.M)[0];
+  $('cadrageCible').innerHTML = cfgCard(`Pour viser ${(cible * 100).toFixed(0)}% : cap minimal nécessaire`, best);
+}
+$('cibleSlider').addEventListener('input', majCible);
 
 function drawCadrage(r) {
   const cv = $('cadrageCanvas'); if (!cv) return;
