@@ -1,7 +1,10 @@
-import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=17';
+import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=18';
 
-const fmt = x => Math.round(x).toLocaleString('fr-FR');
-const fmtM = x => Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k';
+// mode unitaire : quand la cotisation = 1, on lit les montants en multiples de cotisation (×c)
+const unitaire = () => PARAMS && PARAMS.c === 1;
+const fmtUnite = x => { const a = Math.abs(x); const s = a >= 100 ? Math.round(x).toLocaleString('fr-FR') : a >= 10 ? x.toFixed(1) : x.toFixed(2); return s + '×c'; };
+const fmt = x => unitaire() ? fmtUnite(x) : Math.round(x).toLocaleString('fr-FR');
+const fmtM = x => unitaire() ? fmtUnite(x) : (Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k');
 const pct = x => (x * 100).toFixed(x * 100 < 1 && x > 0 ? 1 : 0) + '%';
 const $ = id => document.getElementById(id);
 
@@ -24,9 +27,9 @@ function allerResultats() {
 // ============ SCHÉMA DE TOUS LES PARAMÈTRES ============
 const SCHEMA = [
   { grp: 'Structure du cercle', desc: "La taille et la durée des pools.", items: [
-    { k: 'n_pools', nom: 'Nombre de pools', d: "Combien de cercles tournent en parallèle (échelle du portefeuille).", t: 'range', min: 10, max: 100, step: 10 },
+    { k: 'n_pools', nom: 'Nombre de pools', d: "Cercles en parallèle. 1 = vue unitaire (un seul pool) ; montez pour voir l'échelle du portefeuille.", t: 'range', min: 1, max: 100, step: 1 },
     { k: 'm_membres', nom: 'Membres par pool', d: "Taille d'un cercle. Détermine le pot = (M−1)×cotisation.", t: 'range', min: 6, max: 15, step: 1 },
-    { k: 'c', nom: 'Cotisation mensuelle', d: "Ce que chaque membre verse chaque mois (XOF).", t: 'range', min: 25000, max: 200000, step: 25000, fmt: 'k' },
+    { k: 'c', nom: 'Cotisation mensuelle', d: "Ce que chaque membre verse chaque mois. Mettez 1 pour raisonner en unités (tout devient un multiple de la cotisation).", t: 'logrange', min: 1, max: 200000, fmt: 'k' },
     { k: 'n_cycles', nom: 'Nombre de cycles', d: "Durée de vie du produit = M × cycles mois.", t: 'range', min: 1, max: 4, step: 1 },
     { k: 'k_max', nom: 'Max même secteur / pool', d: "Diversification : au plus K membres du même secteur par pool (limite la corrélation).", t: 'range', min: 1, max: 6, step: 1 },
   ]},
@@ -80,6 +83,18 @@ const SCHEMA = [
 ];
 
 const fmt0 = x => Math.round(x).toLocaleString('fr-FR');
+// échelle logarithmique pour la cotisation : curseur 0..1000 <-> valeur [min,max], arrondie 1-2-5
+const LOG_STEPS = 1000;
+function logToVal(s, min, max) {
+  const v = Math.exp(Math.log(min) + (s / LOG_STEPS) * (Math.log(max) - Math.log(min)));
+  if (v < 10) return Math.max(min, Math.round(v));
+  const pow = Math.pow(10, Math.floor(Math.log10(v))), m = v / pow;
+  const nice = m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10;
+  return Math.min(max, Math.round(nice * pow));
+}
+function valToLog(v, min, max) {
+  return Math.round(LOG_STEPS * (Math.log(Math.max(min, v)) - Math.log(min)) / (Math.log(max) - Math.log(min)));
+}
 function fmtParam(v, f) {
   if (f === 'k') return fmt0(v);
   if (f === 'pct') return (v * 100).toFixed(1).replace(/\.0$/, '') + '%';
@@ -108,6 +123,7 @@ function renderParametres() {
 function paramRow(it) {
   let ctrl = '';
   if (it.t === 'range') ctrl = `<div class="p-ctrl"><input type="range" id="px_${it.k}" min="${it.min}" max="${it.max}" step="${it.step}" value="${PARAMS[it.k]}"><span class="p-val" id="pv_${it.k}">${fmtParam(PARAMS[it.k], it.fmt)}</span></div>`;
+  else if (it.t === 'logrange') ctrl = `<div class="p-ctrl"><input type="range" id="px_${it.k}" min="0" max="${LOG_STEPS}" step="1" value="${valToLog(PARAMS[it.k], it.min, it.max)}"><span class="p-val" id="pv_${it.k}">${fmtParam(PARAMS[it.k], it.fmt)}</span></div>`;
   else if (it.t === 'bool') ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="1" class="${PARAMS[it.k] ? 'on' : ''}">Oui</button><button data-v="0" class="${!PARAMS[it.k] ? 'on' : ''}">Non</button></div>`;
   else if (it.t === 'mode') ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="garantie" class="${PARAMS[it.k] === 'garantie' ? 'on' : ''}">Garantie</button><button data-v="nue" class="${PARAMS[it.k] === 'nue' ? 'on' : ''}">Nue</button></div>`;
   return `<div class="param-row"><div><div class="p-nom">${it.nom}</div><div class="p-desc">${it.d}</div></div>${ctrl}</div>`;
@@ -115,9 +131,10 @@ function paramRow(it) {
 function attachParam(it) {
   const el = $('px_' + it.k); if (!el) return;
   if (it.t === 'range') el.addEventListener('input', e => { PARAMS[it.k] = +e.target.value; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); marquerModifie(); });
+  else if (it.t === 'logrange') el.addEventListener('input', e => { PARAMS[it.k] = logToVal(+e.target.value, it.min, it.max); $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); marquerModifie(); });
   else el.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => { el.querySelectorAll('button').forEach(b => b.classList.remove('on')); btn.classList.add('on'); PARAMS[it.k] = (it.t === 'mode') ? btn.dataset.v : (btn.dataset.v === '1'); marquerModifie(); }));
 }
-function syncParametres() { SCHEMA.flatMap(g => g.items).forEach(it => { const el = $('px_' + it.k); if (!el) return; if (it.t === 'range') { el.value = PARAMS[it.k]; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else { el.querySelectorAll('button').forEach(b => b.classList.toggle('on', (it.t === 'mode' ? b.dataset.v === PARAMS[it.k] : (b.dataset.v === '1') === !!PARAMS[it.k]))); } }); }
+function syncParametres() { SCHEMA.flatMap(g => g.items).forEach(it => { const el = $('px_' + it.k); if (!el) return; if (it.t === 'range') { el.value = PARAMS[it.k]; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else if (it.t === 'logrange') { el.value = valToLog(PARAMS[it.k], it.min, it.max); $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else { el.querySelectorAll('button').forEach(b => b.classList.toggle('on', (it.t === 'mode' ? b.dataset.v === PARAMS[it.k] : (b.dataset.v === '1') === !!PARAMS[it.k]))); } }); }
 function marquerModifie() { $('simStatus').textContent = '⟳ relancez pour voir l\'effet'; }
 
 // presets
@@ -156,7 +173,7 @@ function renderKPIs(a, p) {
   const pot = (p.m_membres - 1) * p.c;
   const items = [
     { l: 'Promesse tenue', v: pct(a.taux_continuite), c: a.taux_continuite >= 0.999 ? 'ok' : 'bad', s: 'tous les tours servis' },
-    { l: 'P&L brut Opérateur', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pools · primes + surplus` },
+    { l: 'P&L brut Opérateur', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pool${p.n_pools > 1 ? 's' : ''} · primes + surplus` },
     { l: 'Revenu / pool', v: kpiV(a.margePool, fmtM), c: 'brand', s: 'brut, hors coûts' },
     { l: 'Risque porté SFD', v: kpiV(a.perteSfd, fmtM), c: 'brand', s: 'avances non récupérées' },
     { l: 'Coût membre tour 1', v: pct(a.coutTour1.moy / pot), c: a.coutTour1.moy / pot < 0.2 ? 'ok' : 'brand', s: 'le dernier tour ≈ 0' },
@@ -209,12 +226,12 @@ function DEFAULTS_SANS_STRESS(base) { return { ...base, comportemental_actif: fa
 // ---- graphiques ----
 function drawPnlDist(a) {
   const cv = $('pnlCanvas'); if (!cv) return; const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  const data = (a._pnls || []).map(x => x / 1e6); if (!data.length) return;
+  const data = (a._pnls || []); if (!data.length) return;
   const lo = Math.min(...data), hi = Math.max(...data), bins = 24, w = (hi - lo) / bins || 1, cnt = new Array(bins).fill(0);
   data.forEach(v => { let b = Math.floor((v - lo) / w); b = Math.max(0, Math.min(bins - 1, b)); cnt[b]++; });
   const mc = Math.max(...cnt), pad = 30, bw = (W - pad * 2) / bins;
   cnt.forEach((c, i) => { const x = pad + i * bw, h = (c / mc) * (H - 38); const mid = lo + (i + 0.5) * w; ctx.fillStyle = mid >= 0 ? '#059669' : '#dc2626'; ctx.fillRect(x, H - 20 - h, bw - 1, h); });
-  ctx.fillStyle = '#9ca3af'; ctx.font = '11px Inter,sans-serif'; ctx.textAlign = 'left'; ctx.fillText(lo.toFixed(0) + 'M', pad, H - 4); ctx.textAlign = 'right'; ctx.fillText(hi.toFixed(0) + 'M', W - 4, H - 4); ctx.textAlign = 'center'; ctx.fillText('P&L brut', W / 2, H - 4);
+  ctx.fillStyle = '#9ca3af'; ctx.font = '11px Inter,sans-serif'; ctx.textAlign = 'left'; ctx.fillText(fmtM(lo), pad, H - 4); ctx.textAlign = 'right'; ctx.fillText(fmtM(hi), W - 4, H - 4); ctx.textAlign = 'center'; ctx.fillText('P&L brut', W / 2, H - 4);
 }
 
 // ---- courbe de vulnérabilité cycle 1 ----
