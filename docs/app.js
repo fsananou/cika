@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout, journalPool } from './moteur.js?v=19';
+import { DEFAUTS, monteCarlo, decompositionCout, journalPool } from './moteur.js?v=20';
 
 // mode unitaire : quand la cotisation = 1, on lit les montants en multiples de cotisation (×c)
 const unitaire = () => PARAMS && PARAMS.c === 1;
@@ -70,6 +70,7 @@ const SCHEMA = [
     { k: 'cycle1_pct_t1', nom: 'Seuil score tour 1', d: "Percentile minimal de score requis au tour 1 (ex. P90 = top 10%).", t: 'range', min: 0.5, max: 0.95, step: 0.05, fmt: 'pct' },
     { k: 'cycle1_pct_mid', nom: 'Seuil score tour M/2', d: "Percentile minimal au milieu du cycle (le seuil décroît jusque-là).", t: 'range', min: 0.3, max: 0.8, step: 0.05, fmt: 'pct' },
     { k: 'alpha_declenchement', nom: 'Seuil de déclenchement α', d: "L'enchère ne s'ouvre que si la collecte du tour atteint α × M × cotisation.", t: 'range', min: 0.5, max: 1, step: 0.05, fmt: 'pct' },
+    { k: 'cycle1_reduction_fuite', nom: 'Réduction de fuite (sélectionnés)', d: "Hypothèse : un emprunteur passé par le filtre fuit dans cette proportion du taux de base (0,5 = fuit 2× moins). C'est ce qui rend le filtre protecteur.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
   ]},
   { grp: 'Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
@@ -159,7 +160,6 @@ function lancer() {
     renderFluxSfd(a, PARAMS);
     renderTableauScenarios();
     drawPnlDist(a);
-    drawVuln(a, PARAMS);
     $('btnRun').textContent = 'Lancer';
     $('simStatus').textContent = 'calculé';
     allerResultats();
@@ -239,38 +239,40 @@ function drawPnlDist(a) {
 // ---- courbe de vulnérabilité cycle 1 ----
 // par tour : perte max d'une fuite unique (barres) vs couverture disponible (FGE + tranche SFD, ligne).
 // un tour est "en alerte" (barre rouge) si une seule fuite épuiserait la couverture disponible.
-function drawVuln(a, p) {
+// Démo de l'effet du filtre de score au cycle 1 : on balaie le taux de fuite et on compare,
+// AVEC vs SANS filtre, le résiduel par pool (perte non couverte). Le filtre sélectionne les
+// meilleurs profils, qui fuient moins -> moins de pertes. Toujours sur 1 pool isolé.
+function drawFiltreDemo(p) {
   const cv = $('vulnCanvas'); if (!cv) return;
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  const prof = a.vulnProfil;
-  if (!prof || !prof.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Activez « Accès filtré par score » (règles cycle 1) pour voir la courbe.', 16, H / 2); $('vulnLegende').innerHTML = ''; return; }
-  const padL = 52, padR = 12, padB = 26, padT = 14;
-  const mx = Math.max(...prof.map(v => Math.max(v.perteMax, v.couvertureDispo)), 1);
-  const n = prof.length, plotW = W - padL - padR, plotH = H - padB - padT;
-  const xc = i => padL + (i + 0.5) * (plotW / n);
-  const yv = v => padT + plotH - (v / mx) * plotH;
-  // grille + axes
+  const fuites = [0.06, 0.12, 0.18, 0.25];
+  const runs = Math.min(300, Math.max(120, p._runs * 2));
+  const data = fuites.map(pf => {
+    const base = { ...p, n_pools: 1, p_fuite_base: pf };
+    const on = monteCarlo({ ...base, cycle1_scoring_actif: true }, runs, 12345);
+    const off = monteCarlo({ ...base, cycle1_scoring_actif: false }, runs, 12345);
+    return { pf, on: on.residuel.moy, off: off.residuel.moy };
+  });
+  const padL = 56, padR = 14, padB = 30, padT = 14;
+  const mx = Math.max(...data.flatMap(d => [d.on, d.off]), 1);
+  const n = data.length, plotW = W - padL - padR, plotH = H - padB - padT;
+  const grp = plotW / n, bw = Math.min(34, grp * 0.3);
+  const yb = v => padT + plotH - (v / mx) * plotH;
   ctx.strokeStyle = '#f3f4f6'; ctx.lineWidth = 1; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
   for (let g = 0; g <= 4; g++) { const yy = padT + (g / 4) * plotH, val = mx * (1 - g / 4); ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText(fmtM(val), padL - 6, yy + 3); }
-  // barres = perte max d'une fuite (rouge si alerte, sinon gris)
-  const bw = Math.min(36, (plotW / n) * 0.55);
-  prof.forEach((v, i) => {
-    const x = xc(i) - bw / 2, h = (v.perteMax / mx) * plotH;
-    ctx.fillStyle = v.partAlerte >= 0.5 ? 'rgba(220,38,38,.80)' : 'rgba(209,213,219,.95)';
-    ctx.fillRect(x, padT + plotH - h, bw, h);
-    ctx.fillStyle = '#9ca3af'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif'; ctx.fillText('T' + v.tour, xc(i), H - 8);
+  data.forEach((d, i) => {
+    const cx = padL + (i + 0.5) * grp;
+    // sans filtre (rouge) à gauche, avec filtre (teal) à droite
+    ctx.fillStyle = 'rgba(220,38,38,.80)'; ctx.fillRect(cx - bw - 3, yb(d.off), bw, padT + plotH - yb(d.off));
+    ctx.fillStyle = '#0f4c4a'; ctx.fillRect(cx + 3, yb(d.on), bw, padT + plotH - yb(d.on));
+    ctx.fillStyle = '#9ca3af'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif'; ctx.fillText('fuite ' + Math.round(d.pf * 100) + '%', cx, H - 9);
   });
-  // ligne = couverture disponible (FGE + tranche SFD)
-  ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
-  prof.forEach((v, i) => i ? ctx.lineTo(xc(i), yv(v.couvertureDispo)) : ctx.moveTo(xc(i), yv(v.couvertureDispo))); ctx.stroke();
-  prof.forEach((v, i) => { ctx.fillStyle = '#0f4c4a'; ctx.beginPath(); ctx.arc(xc(i), yv(v.couvertureDispo), 2.5, 0, 7); ctx.fill(); });
-  // légende
-  const nAlerte = prof.filter(v => v.partAlerte >= 0.5).length;
+  const moyOff = data.reduce((s, d) => s + d.off, 0) / n, moyOn = data.reduce((s, d) => s + d.on, 0) / n;
+  const gain = moyOff > 0 ? (1 - moyOn / moyOff) * 100 : 0;
   $('vulnLegende').innerHTML =
-    `<span class="lg"><i class="sw" style="background:rgba(209,213,219,.95)"></i> pire fuite (couverte)</span>` +
-    `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> pire fuite (à découvert)</span>` +
-    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> couverture disponible (FGE + tranche SFD)</span>` +
-    `<span class="lg-note">${nAlerte === 0 ? 'Aucun tour à découvert : la couverture absorbe toujours la pire fuite, même FGE vide.' : nAlerte + ' tour(s) où une seule fuite épuiserait la couverture disponible.'}</span>`;
+    `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> sans filtre de score</span>` +
+    `<span class="lg"><i class="sw" style="background:#0f4c4a"></i> avec filtre de score</span>` +
+    `<span class="lg-note">Résiduel moyen par pool (perte non couverte) au cycle 1, selon le taux de fuite. Le filtre réduit la perte de ~${Math.round(gain)} % en moyenne ici : en réservant les premiers tours aux meilleurs profils (qui fuient ${Math.round((1 - (p.cycle1_reduction_fuite ?? 0.5)) * 100)} % de moins, par hypothèse), on évite les fuites précoces coûteuses quand le FGE est encore vide.</span>`;
 }
 
 // ---- page FLUX : déroulé d'un pool, tour par tour ----
@@ -279,6 +281,9 @@ const ACTEUR_CLS = { SFD: 'a-sfd', FGE: 'a-fge', Opérateur: 'a-op', Dépôt: 'a
 const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos' };
 
 function renderFlux() {
+  // démo : effet du filtre de score sur les pertes du cycle 1 (avec vs sans)
+  drawFiltreDemo(PARAMS);
+
   const j = journalPool({ ...PARAMS }, fluxGraine);
   const nFuites = j.tours.reduce((s, tr) => s + tr.mvt.filter(m => m.type === 'fuite').length, 0);
   $('fluxResume').textContent = `Pool de ${j.m} membres · ${j.cycles} cycle${j.cycles > 1 ? 's' : ''} (${j.totalTours} tours) · pot = ${fmtM(j.pot)} · ${nFuites} fuite${nFuites !== 1 ? 's' : ''}, ${j.nRempl} remplacement${j.nRempl !== 1 ? 's' : ''}. Les flux suivent la mécanique exacte du moteur ; la fuite est tirée au hasard selon les paramètres.`;

@@ -55,6 +55,7 @@ export const DEFAUTS = {
   cycle1_scoring_actif: true,
   cycle1_pct_t1: 0.90,           // percentile de score requis au tour 1 (P90)
   cycle1_pct_mid: 0.50,          // percentile requis au tour M/2 (P50)
+  cycle1_reduction_fuite: 0.50,  // un emprunteur passé par le filtre fuit 2× moins (meilleur profil)
   alpha_declenchement: 0.80,     // l'enchère ne s'ouvre que si cotisations >= alpha * M * c
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
@@ -179,7 +180,8 @@ export function simulerRun(p, graine) {
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui) {
           const moisR = Math.max(1, vie - mb.tEnc);
-          const pf = probaFuite(p.p_fuite_base, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
+          const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.5) : 1);
+          const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
             mb.aFui = true; nFuites++;
             let trou = 0;
@@ -209,7 +211,8 @@ export function simulerRun(p, graine) {
         // --- PHASE EMPRUNTEURS : enchère, avance SFD, crédit-relais, prime + risque de fuite ---
         let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
         // RÈGLE CYCLE 1.a : filtre par score décroissant (P90 -> P50)
-        if (cycle1 && p.cycle1_scoring_actif) {
+        const filtreActif = cycle1 && p.cycle1_scoring_actif;
+        if (filtreActif) {
           const sMin = seuilScorePool(membres, slot);
           elig = elig.filter(mb => mb.score >= sMin);
         }
@@ -241,6 +244,8 @@ export function simulerRun(p, graine) {
           } else { bid = 0; net = pot; avanceCumulee += pot; }
           cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
           gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
+          // HYPOTHÈSE : un membre sélectionné par le filtre de score (meilleur profil) fuit moins.
+          if (filtreActif) gagnant.filtreScore = true;
           if (!bideur) nGratuits++;
           if (t === 1 && coutTour1 === 0) coutTour1 = bid;
         }

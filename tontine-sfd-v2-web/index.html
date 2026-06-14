@@ -77,18 +77,19 @@
       <h3>Distribution du P&L brut <span class="hint">sur tous les runs</span></h3>
       <canvas id="pnlCanvas" width="1020" height="190"></canvas>
     </div>
-
-    <div class="card chart-card">
-      <h3>Courbe de vulnérabilité — cycle 1 (par pool) <span class="hint">FGE en constitution · pire fuite d'un pool vs sa couverture disponible</span></h3>
-      <canvas id="vulnCanvas" width="1020" height="220"></canvas>
-      <div id="vulnLegende" class="vuln-legende"></div>
-    </div>
   </section>
 </main>
 
 <!-- ============ ONGLET FLUX (déroulé des mouvements d'un pool) ============ -->
 <main id="vue-flux" hidden>
   <section class="wrap">
+    <div class="card chart-card">
+      <h3>Pourquoi filtrer l'accès aux enchères au cycle 1</h3>
+      <p class="flux-sub">Au premier cycle, le FGE part de zéro : une fuite précoce n'est presque pas couverte. Le <b>filtre par score</b> réserve les premiers tours aux meilleurs profils, qui fuient moins — on évite donc les fuites coûteuses tant que le fonds se constitue. Le graphe compare le <b>résiduel par pool</b> (perte non couverte) <b>avec</b> et <b>sans</b> filtre, à différents taux de fuite.</p>
+      <canvas id="vulnCanvas" width="1020" height="220"></canvas>
+      <div id="vulnLegende" class="vuln-legende"></div>
+    </div>
+
     <div class="flux-head">
       <div>
         <h3 class="flux-titre">Déroulé d'un pool, tour par tour</h3>
@@ -100,6 +101,6 @@
   </section>
 </main>
 
-<script type="module" src="app.js?v=19"></script>
+<script type="module" src="app.js?v=20"></script>
 </body>
 </html>
