@@ -320,7 +320,7 @@ $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux();
 // Les autres leviers — dont la cotisation c — sont balayés en bandes min–max.
 const BANDES = [
   { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,    max: 20,     pas: 1,     lo: 6,     hi: 12,     fmt: 'int' },
-  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 5000, max: 200000, pas: 5000,  lo: 25000, hi: 100000, fmt: 'k' },
+  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 1000, max: 100000, pas: 1000,  lo: 2000,  hi: 50000,  fmt: 'k' },
   { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,    max: 4,      pas: 1,     lo: 1,     hi: 2,      fmt: 'int' },
   { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2,  max: 1,      pas: 0.05,  lo: 0.55,  hi: 0.85,   fmt: 'pct' },
   { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
@@ -370,7 +370,7 @@ function renderCadrageCtrls() {
 }
 $('btnCadrageReset').addEventListener('click', () => {
   CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
-  const def = { Ms: [6, 12], cs: [25000, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
+  const def = { Ms: [6, 12], cs: [2000, 50000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
   BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
 });
 
@@ -391,25 +391,23 @@ function lancerCadrage() {
 }
 $('btnCadrage').addEventListener('click', lancerCadrage);
 
-// encart « meilleure config » + lecture inverse (promesse cible -> cap min + config)
+// OBJECTIF : minimiser le RÉSIDUEL (perte sèche non couvrable) PARMI les configs qui tiennent
+// la promesse cible ET respectent l'usure. Le cap SFD est fixé ; c et M sont déterminés.
 function renderCadrageGagnante(r) {
-  const ok = r.rows.filter(x => x.usureOk);
-  const best = ok.sort((a, b) => b.promesse - a.promesse)[0];
-  $('cadrageGagnanteCard').hidden = !best;
-  if (!best) return;
-  $('cadrageGagnante').innerHTML = cfgCard('Promesse maximale atteignable', best);
+  $('cadrageGagnanteCard').hidden = !(r.rows && r.rows.length);
   majCible();
 }
 function cfgCard(titre, x) {
+  const pot = (x.M - 1) * x.c;
   return `<div class="cfg-titre">${titre}</div>
     <div class="cfg-grid">
+      <div class="cfg-kpi"><span class="lbl">Perte sèche / pool</span><span class="val ${x.residuel <= pot * 0.01 ? 'ok' : x.residuel <= pot * 0.05 ? '' : 'bad'}">${fmtM(x.residuel)}</span></div>
       <div class="cfg-kpi"><span class="lbl">Promesse / pool</span><span class="val ${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span></div>
-      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${(x.capPot * 100).toFixed(0)}% du pot</span></div>
+      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${(x.capPot * 100).toFixed(0)}% (${fmtM(x.capPot * pot)})</span></div>
       <div class="cfg-kpi"><span class="lbl">Taille M</span><span class="val">${x.M}</span></div>
       <div class="cfg-kpi"><span class="lbl">Cotisation</span><span class="val">${fmtM(x.c)}</span></div>
-      <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cycle${x.duree > 1 ? 's' : ''}</span></div>
+      <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cyc.</span></div>
       <div class="cfg-kpi"><span class="lbl">Profils sûrs</span><span class="val">${(x.partSurs * 100).toFixed(0)}%</span></div>
-      <div class="cfg-kpi"><span class="lbl">Rémun. dépôts</span><span class="val">${(x.rDepot * 100).toFixed(0)}%</span></div>
       <div class="cfg-kpi"><span class="lbl">Usure (≤24%)</span><span class="val ${x.usure <= 0.24 ? 'ok' : 'bad'}">${(x.usure * 100).toFixed(1)}%</span></div>
     </div>`;
 }
@@ -418,10 +416,15 @@ function majCible() {
   const cible = +$('cibleSlider').value;
   $('cibleOut').textContent = (cible * 100).toFixed(0) + '%';
   const ok = r.rows.filter(x => x.usureOk && x.promesse >= cible);
-  if (!ok.length) { $('cadrageCible').innerHTML = `<p class="muted">Aucune configuration n'atteint ${(cible * 100).toFixed(0)}% sur les plages choisies — élargissez les bandes (cap, profils sûrs) ou baissez la cible.</p>`; return; }
-  // cap minimal qui atteint la cible, et la config la moins-disante (plus petit cap, puis plus petit M)
-  const best = ok.sort((a, b) => a.capPot - b.capPot || a.M - b.M)[0];
-  $('cadrageCible').innerHTML = cfgCard(`Pour viser ${(cible * 100).toFixed(0)}% : cap minimal nécessaire`, best);
+  if (!ok.length) {
+    $('cadrageGagnante').innerHTML = '';
+    $('cadrageCible').innerHTML = `<p class="muted">Aucune configuration n'atteint ${(cible * 100).toFixed(0)}% de promesse en respectant l'usure, sur les plages choisies. Élargissez les bandes (M, profils sûrs, cotisation) ou baissez la cible.</p>`;
+    return;
+  }
+  // perte sèche minimale parmi celles qui tiennent la cible ; départage par promesse haute puis petit c
+  const best = ok.sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse || a.c - b.c)[0];
+  $('cadrageGagnante').innerHTML = cfgCard(`Perte sèche minimale pour viser ≥ ${(cible * 100).toFixed(0)}% de promesse`, best);
+  $('cadrageCible').innerHTML = '';
 }
 $('cibleSlider').addEventListener('input', majCible);
 
@@ -459,10 +462,11 @@ function drawCadrage(r) {
 }
 
 function renderCadrageTable(r) {
-  const top = r.rows.slice().filter(x => x.usureOk).sort((a, b) => b.promesse - a.promesse).slice(0, 12);
+  // triées par perte sèche croissante (objectif), parmi celles qui respectent l'usure
+  const top = r.rows.slice().filter(x => x.usureOk).sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse).slice(0, 12);
   if (!top.length) { $('cadrageTable').innerHTML = '<p class="muted">Aucune configuration ne respecte le seuil d\'usure sur cette grille.</p>'; return; }
-  const tb = top.map(x => `<tr><td>${(x.capPot * 100).toFixed(0)}%</td><td>${x.M}</td><td>${fmtM(x.c)}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td>${(x.rDepot * 100).toFixed(0)}%</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
-  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Cap SFD</th><th>M</th><th>Cotis.</th><th>Sûrs</th><th>Cycles</th><th>Rém.dép.</th><th>Promesse/pool</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
+  const tb = top.map(x => `<tr><td>${fmtM(x.residuel)}</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${x.M}</td><td>${fmtM(x.c)}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td>${(x.rDepot * 100).toFixed(0)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
+  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Perte sèche</th><th>Promesse/pool</th><th>M</th><th>Cotis.</th><th>Sûrs</th><th>Cycles</th><th>Rém.dép.</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
 }
 
 // ---- init ----
