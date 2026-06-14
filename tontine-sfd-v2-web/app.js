@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=16';
+import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js?v=17';
 
 const fmt = x => Math.round(x).toLocaleString('fr-FR');
 const fmtM = x => Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k';
@@ -139,7 +139,6 @@ function lancer() {
     const a = monteCarlo({ ...PARAMS }, PARAMS._runs, 12345);
     dernier = a;
     renderKPIs(a, PARAMS);
-    drawExpo(a, PARAMS);
     renderCoutDecompo(PARAMS);
     renderFluxSfd(a, PARAMS);
     renderTableauScenarios();
@@ -160,7 +159,6 @@ function renderKPIs(a, p) {
     { l: 'P&L brut Opérateur', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pools · primes + surplus` },
     { l: 'Revenu / pool', v: kpiV(a.margePool, fmtM), c: 'brand', s: 'brut, hors coûts' },
     { l: 'Risque porté SFD', v: kpiV(a.perteSfd, fmtM), c: 'brand', s: 'avances non récupérées' },
-    { l: 'Exposition SFD max', v: kpiV(a.expoMax, fmtM), c: 'brand', s: 'avances en cours (pic)' },
     { l: 'Coût membre tour 1', v: pct(a.coutTour1.moy / pot), c: a.coutTour1.moy / pot < 0.2 ? 'ok' : 'brand', s: 'le dernier tour ≈ 0' },
     { l: 'Fuites moyennes', v: kpiV(a.fuites, x => Math.round(x).toString()), c: 'brand', s: 'bénéficiaires disparus' },
     { l: 'Rémunération épargnant', v: kpiV(a.remunParEpargnant, fmtM), c: 'ok', s: 'bonus du membre patient' },
@@ -209,15 +207,6 @@ function renderTableauScenarios() {
 function DEFAULTS_SANS_STRESS(base) { return { ...base, comportemental_actif: false, macro_actif: false, choc_fuite: 0, z_choc: 0, z_persistance: 0, bascule_urgents: 0 }; }
 
 // ---- graphiques ----
-function drawExpo(a, p) {
-  const cv = $('expoCanvas'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  const prof = a.expoProfil; if (!prof) return;
-  const mx = Math.max(...prof, 1), pad = 40;
-  const xs = i => pad + (i / (prof.length - 1)) * (W - pad - 8), ys = v => H - 22 - (v / mx) * (H - 36);
-  ctx.beginPath(); ctx.moveTo(xs(0), ys(0)); prof.forEach((v, i) => ctx.lineTo(xs(i), ys(v))); ctx.lineTo(xs(prof.length - 1), ys(0)); ctx.closePath(); ctx.fillStyle = 'rgba(15,76,74,.12)'; ctx.fill();
-  ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath(); prof.forEach((v, i) => i ? ctx.lineTo(xs(i), ys(v)) : ctx.moveTo(xs(i), ys(v))); ctx.stroke();
-  ctx.fillStyle = '#9ca3af'; ctx.font = '11px Inter,sans-serif'; ctx.fillText(fmtM(mx), 4, 14); ctx.fillText('0', 4, H - 22); ctx.textAlign = 'center'; ctx.fillText('mois', W / 2, H - 4);
-}
 function drawPnlDist(a) {
   const cv = $('pnlCanvas'); if (!cv) return; const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
   const data = (a._pnls || []).map(x => x / 1e6); if (!data.length) return;

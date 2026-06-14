@@ -105,5 +105,3 @@ table.data td.num{font-weight:600}
 .vuln-legende .sw{display:inline-block;width:12px;height:12px;border-radius:2px}
 .vuln-legende .sw.line{height:3px}
 .vuln-legende .lg-note{flex-basis:100%;color:var(--ink);font-size:11px;margin-top:2px}
-
-footer{padding:18px 28px;color:var(--muted);font-size:11px;border-top:1px solid var(--line);margin-top:10px}
