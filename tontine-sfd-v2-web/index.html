@@ -15,6 +15,7 @@
     </div>
     <div class="seg" id="ongletSeg">
       <button class="seg-btn active" data-onglet="parametres">Paramètres</button>
+      <button class="seg-btn" data-onglet="cadrage">Cadrage du risque</button>
       <button class="seg-btn" data-onglet="resultats">Résultats</button>
       <button class="seg-btn" data-onglet="flux">Flux</button>
     </div>
@@ -48,6 +49,29 @@
         </div>
       </div>
       <div id="paramGroupes" class="param-cols"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ ONGLET CADRAGE DU RISQUE (optimisation des paramètres) ============ -->
+<main id="vue-cadrage" hidden>
+  <section class="wrap">
+    <div class="card">
+      <h3>Cadrage du risque — paramètres soutenables</h3>
+      <p class="flux-sub">On fixe ce que la SFD accepte d'absorber (son skin in the game, en % du pot) et on cherche les paramètres de tontine soutenables : promesse maximale, sous la contrainte du <b>seuil d'usure UEMOA</b> (coût membre annualisé ≤ 24 %). Le calcul tourne par pool (Monte Carlo). On balaie la taille du pool (M), la part de profils sûrs et la durée.</p>
+      <div class="cadrage-ctrls" id="cadrageCtrls"></div>
+      <div class="run-actions"><button id="btnCadrage" class="btn big">Lancer le cadrage</button><span class="param-status" id="cadrageStatus"></span></div>
+    </div>
+
+    <div class="card chart-card">
+      <h3>Frontière : cap SFD demandé → promesse atteignable <span class="hint">meilleure config par niveau de cap</span></h3>
+      <canvas id="cadrageCanvas" width="1020" height="220"></canvas>
+      <div id="cadrageLegende" class="vuln-legende"></div>
+    </div>
+
+    <div class="card">
+      <h3>Configurations optimales <span class="hint">triées par promesse · usure respectée</span></h3>
+      <div id="cadrageTable" class="table-wrap"></div>
     </div>
   </section>
 </main>

@@ -50,6 +50,10 @@ export const DEFAUTS = {
   garantie_enchere_active: true, g_cotisations: 1,
   prime_active: true, fge_actif: true,
   tranche_sfd_active: true, plafond_tranche_sfd_frac: 0.15,
+  // CAP SFD (skin in the game) exprimé en NOMBRE DE COTISATIONS, cumulé sur le pool : la SFD
+  // accepte d'absorber jusqu'à cap_sfd_cotisations × c de pertes (avances de fuyards non
+  // remboursées) après le FGE. Au-delà = rupture du dispositif (promesse cassée).
+  cap_sfd_cotisations: 4,
   // FGE/tranche SFD isolés par pool (défaut) : la solidité d'un pool ne dépend que de lui-même.
   // true = mutualisés entre tous les pools (un pool sain peut renflouer un pool en fuite).
   fge_mutualise: false,
@@ -67,6 +71,8 @@ export const DEFAUTS = {
   // P&L BRUT : on n'inclut aucun coût (acquisition, ops, fixes). Les coûts relèvent de la
   // structure et du financement, hors du périmètre. Le P&L = revenus bruts du mécanisme.
   cout_acquisition_membre: 0, cout_ops_pool_mois: 0, couts_fixes_mensuels: 0, cout_capital_annuel: 0.10,
+  // plafond réglementaire BCEAO/UEMOA : le coût du crédit-relais annualisé ne doit pas dépasser ça.
+  taux_usure_annuel: 0.24,
 };
 
 const rSfdMensuel = p => p.r_sfd_annuel / 12;
@@ -135,7 +141,7 @@ export function simulerRun(p, graine) {
       const eligibleEnchere = candidatEmp && rng() < p.part_eligibles_enchere;
       return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, eligibleEnchere, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
     });
-    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0 });
+    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0, rompu: false, trou: 0, absorbeSfdPic: 0, absorbeFgePic: 0 });
   }
 
   // FGE et tranche SFD : ISOLÉS par pool (défaut) ou MUTUALISÉS entre pools.
@@ -171,62 +177,70 @@ export function simulerRun(p, graine) {
 
     for (let pid = 0; pid < nPools; pid++) {
       const membres = pools[pid], cpt = comptes[pid];
-      // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
-      // Le remplaçant RATTRAPE les cotisations des tours passés (-> dépôt), mais ce rattrapage ne
-      // réduit PAS le trou : la dette du fuyard ne peut être portée par autrui, elle reste sur la
-      // cascade FGE -> SFD. Le remplaçant entre en ÉPARGNANT (pas d'enchère ce cycle ; cotisé + bonus).
+      // 0. REMPLACEMENTS en attente (place vacante depuis le tour précédent) : rattrapage -> dépôt + réactivation.
       for (const mb of membres) {
-        if (mb.aEncaisse && !mb.aFui) {
+        if (mb.vacant) {
+          const rattrapage = slot * p.c; cpt.depot += rattrapage;
+          mb.aFui = false; mb.vacant = false; mb.aEncaisse = false; mb.tEnc = null; mb.cotise = rattrapage;
+          mb.filtreScore = false; mb.candidatEmp = (mb.remplToType !== 'epargnant'); mb.remplToType = null;
+        }
+      }
+      // 1a. CAS 1 — fuite d'un encaisseur : il part avec le crédit-relais. Son avance non amortie
+      // (pr.restant) cesse d'être recouvrée (pr.actif=false) : elle disparaît des ENGAGEMENTS
+      // recouvrables mais ne reviendra jamais au dépôt -> creuse mécaniquement le DÉFICIT projeté,
+      // que la condition forward-looking (étape 5) capture. Pas d'imputation cascade ici.
+      // La place devient VACANTE, remplacée au tour suivant.
+      for (const mb of membres) {
+        if (mb.aEncaisse && !mb.aFui && !cpt.rompu) {
           const moisR = Math.max(1, vie - mb.tEnc);
           const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.red_fuite_eligible ?? 0.33) : 1);
           const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
             nFuites++;
+            // PERTE = avance non amortie du fuyard (pr.restant). Le crédit-relais est porté par la
+            // SFD : si le membre fuit, elle ne le récupère pas. Absorption FGE -> cap SFD -> rupture.
             let trou = 0;
             for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
             if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
-            // remplaçant-épargnant : rattrape les tours passés (versés au dépôt, lui reviendront),
-            // profil ÉPARGNANT sans droit d'enchère ce cycle ; il cotise et sera servi (cotisé + bonus).
-            const rattrapage = slot * p.c; cpt.depot += rattrapage;
-            mb.aEncaisse = false; mb.tEnc = null; mb.aFui = false; mb.cotise = rattrapage;
-            mb.remplaceEnc = true; mb.candidatEmp = false; mb.filtreScore = false;
-            let reste = trou;
-            const pf2 = p.fge_actif ? Math.min(getFge(pid), reste) : 0; addFge(pid, -pf2); reste -= pf2; couvertFge += pf2;
-            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, reste); addTranche(pid, ps); reste -= ps; couvertSfd += ps; perteSfd += ps; }
-            if (reste > 1e-9) { residuel += reste; continuiteOk = false; comptes[pid].casse = true; }
+            // 1) FGE (réserve accumulée des bids) absorbe en premier
+            const parFge = p.fge_actif ? Math.min(getFge(pid), trou) : 0; addFge(pid, -parFge); trou -= parFge; couvertFge += parFge;
+            // 2) cap SFD = K cotisations, CUMULÉ sur le pool (skin in the game)
+            const capSfd = (p.cap_sfd_cotisations || 0) * p.c;
+            const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0));
+            const parSfd = Math.min(dispoSfd, trou); cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; trou -= parSfd; couvertSfd += parSfd; perteSfd += parSfd;
+            // 3) au-delà du cap -> RUPTURE du dispositif (promesse cassée), on arrête ce pool
+            if (trou > 1e-9) { residuel += trou; continuiteOk = false; comptes[pid].casse = true; cpt.rompu = true; }
+            mb.aFui = true; mb.vacant = true; mb.remplToType = 'epargnant';
           }
         }
       }
-      // 1b. CAS 2 — arrêt d'un membre N'AYANT PAS ENCORE ENCAISSÉ (paramétrable, off par défaut).
-      // Le partant est remboursé de ses cotisations (sortie dépôt) ; un remplaçant rattrape les
-      // tours déjà passés (entrée dépôt) et reprend le sous-compte avec son droit d'enchère.
+      // 1b. CAS 2 — arrêt d'un non-encaisseur (paramétrable, off par défaut) : remboursé ;
+      // place vacante, remplaçant au tour suivant (avec droit d'enchère).
       if ((p.taux_arret_non_encaisseur || 0) > 0) {
         for (const mb of membres) {
-          if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc) {
-            if (rng() < p.taux_arret_non_encaisseur) {
-              const rembourse = mb.cotise;                 // ce qu'il avait déjà versé
-              cpt.depot = Math.max(0, cpt.depot - rembourse);
-              const rattrapage = slot * p.c;               // tours 1..t-1 que le remplaçant rattrape
-              cpt.depot += rattrapage;
-              mb.cotise = rattrapage; mb.remplaceNonEnc = true;
-            }
+          if (!mb.aEncaisse && !mb.aFui && !mb.vacant && rng() < p.taux_arret_non_encaisseur) {
+            cpt.depot = Math.max(0, cpt.depot - mb.cotise);
+            mb.aFui = true; mb.vacant = true; mb.remplToType = 'emprunteur';
           }
         }
       }
-      // 2. collecte des cotisations -> alimente le dépôt commun
+      // 2. collecte des cotisations -> alimente le dépôt commun.
+      // TOUT LE MONDE cotise c chaque mois (encaisseurs compris) ; seuls les fuyards non remplacés manquent.
       const actifs = membres.filter(mb => !mb.aFui);
       let potColl = 0;
-      for (const mb of actifs) if (!mb.aEncaisse) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
+      for (const mb of actifs) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
       // intérêts sur le dépôt (la SFD rémunère l'épargne déposée)
       if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
 
       const dureePret = Math.max(1, m - (slot + 1));
       const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
 
-      // 3. attribution + 4. décaissement
+      // 3. attribution + 4. décaissement — sauf si le pool est ROMPU (dispositif arrêté).
       let gagnant = null, bideur = false, bidSurplusWtp = 0;
       const cycle1 = (t <= m); // premier cycle
-      if (phaseEmprunteur) {
+      if (cpt.rompu) {
+        // pool rompu : on ne sert plus, on ne décaisse plus ; on laisse juste tourner les flux passifs.
+      } else if (phaseEmprunteur) {
         // --- PHASE EMPRUNTEURS : enchère, avance SFD, crédit-relais, prime + risque de fuite ---
         // candidats préférés (population emprunteur déclarée) ; repli anti-gel sur tout non-encaisseur
         const nonEnc = actifs.filter(mb => !mb.aEncaisse);
@@ -259,7 +273,7 @@ export function simulerRun(p, graine) {
             surplusEnchere += (surplus - partEp);
             cpt.depot += partEp; remunEpargnants += partEp;  // alimente la rémunération épargnants
           } else { bid = 0; net = pot; avanceCumulee += pot; }
-          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true, tOctroi: t }); cpt.decaisseCumule += net;
           gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
           // HYPOTHÈSE : un membre sélectionné par le filtre de score (meilleur profil) fuit moins.
           if (filtreActif) gagnant.filtreScore = true;
@@ -283,21 +297,22 @@ export function simulerRun(p, graine) {
             gagnant = eparg[Math.floor(rng() * eparg.length)];
           }
           gagnant.estEpargnant = true; gagnant.aEncaisse = true; gagnant.tEnc = t;
-          // servi depuis le dépôt ; si insuffisant, le complément passe par la CASCADE de
-          // couverture (FGE -> tranche SFD), comme tout trou. La promesse tient tant que la
-          // cascade tient.
-          const pris = Math.min(cpt.depot, pot); cpt.depot -= pris;
-          let complement = pot - pris;
-          if (complement > 1e-9) {
-            const pf = p.fge_actif ? Math.min(getFge(pid), complement) : 0; addFge(pid, -pf); complement -= pf; couvertFge += pf;
-            if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, complement); addTranche(pid, ps); complement -= ps; couvertSfd += ps; perteSfd += ps; }
-            if (complement > 1e-9) { residuel += complement; continuiteOk = false; comptes[pid].casse = true; }
+          // servi depuis le dépôt ; si insuffisant, le complément passe par FGE -> cap SFD -> rupture.
+          const pris = Math.min(Math.max(cpt.depot, 0), pot); cpt.depot -= pris;
+          let manque = pot - pris;
+          if (manque > 1e-9) {
+            const parFge = p.fge_actif ? Math.min(getFge(pid), manque) : 0; addFge(pid, -parFge); manque -= parFge; couvertFge += parFge;
+            const capSfd = (p.cap_sfd_cotisations || 0) * p.c;
+            const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0));
+            const parSfd = Math.min(dispoSfd, manque); cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; manque -= parSfd; couvertSfd += parSfd; perteSfd += parSfd;
+            if (manque > 1e-9) { residuel += manque; continuiteOk = false; comptes[pid].casse = true; cpt.rompu = true; }
           }
           gagnant.recu += pot;
         }
       }
-      // 5. récupération des prêts (rembourse le dépôt)
-      for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; }
+      // 5. récupération des prêts : la mensualité amortit l'avance SFD (pr.restant) — pas le mois
+      // de l'octroi (1er prélèvement le tour suivant). Plus tard la fuite coûte moins (restant petit).
+      for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9 && pr.tOctroi < t) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; }
       exposMois[t - 1] += cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     }
     // --- COURBE DE VULNÉRABILITÉ CYCLE 1 (FGE en constitution), RAMENÉE À UN POOL ---
@@ -307,17 +322,18 @@ export function simulerRun(p, graine) {
       const expoNette = exposMois[t - 1] / nPools;          // encours moyen par pool
       // pire fuite d'un pool : la plus grosse avance en cours, mesurée pool par pool puis moyennée
       let perteMaxParPool = 0;
-      let fgeDispoTot = 0, plafTrancheTot = 0;
+      let fgeDispoTot = 0, capDispoTot = 0;
+      const capSfd = (p.cap_sfd_cotisations || 0) * p.c;   // cap SFD par pool (skin in the game)
       for (let pid = 0; pid < nPools; pid++) {
         let pmax = 0; for (const pr of comptes[pid].prets) if (pr.actif && pr.restant > pmax) pmax = pr.restant;
         perteMaxParPool += pmax / nPools;
         fgeDispoTot += getFge(pid);
-        if (p.tranche_sfd_active) plafTrancheTot += Math.max(0, p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1) - getTranche(pid));
+        capDispoTot += Math.max(0, capSfd - (comptes[pid].absorbeSfd || 0));
       }
-      // en mutualisé, getFge/getTranche renvoient le global pour chaque pid -> on corrige par /nPools
+      // en mutualisé, getFge renvoie le global pour chaque pid -> on corrige par /nPools
       const fgeDispo = (mutu ? fgeGlob : fgeDispoTot) / nPools;
-      const plafTranche = (mutu ? (p.tranche_sfd_active ? Math.max(0, p.plafond_tranche_sfd_frac * Math.max(comptes.reduce((s, c) => s + c.decaisseCumule, 0), 1) - trancheGlob) : 0) : plafTrancheTot) / nPools;
-      const couvertureDispo = fgeDispo + plafTranche;
+      const capDispo = capDispoTot / nPools;
+      const couvertureDispo = fgeDispo + capDispo;
       const perteMax = perteMaxParPool;
       const alerte = couvertureDispo < perteMax;  // une seule fuite épuiserait la couverture d'un pool
       if (alerte) tours_fge_insuffisant++;
@@ -379,7 +395,7 @@ export function journalPool(p, graine) {
              candidatEmp, eligibleEnchere, estEpargnant: false,
              aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remplacant: null };
     });
-  const cpt = { prets: [], decaisseCumule: 0, depot: 0 };
+  const cpt = { prets: [], decaisseCumule: 0, depot: 0, rompu: false, trou: 0, absorbeSfd: 0 };
   let fge = 0, trancheUtil = 0, nRempl = 0;
   const etatZ = {};
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
@@ -394,64 +410,74 @@ export function journalPool(p, graine) {
     if (slot === 0) for (const mb of membres) if (!mb.aFui) mb.aEncaisse = false;
     const mvt = [];
 
+    // 0. REMPLACEMENTS en attente (la place était vacante depuis le tour précédent) : un remplaçant
+    // arrive, rattrape les cotisations des tours passés (-> dépôt) et réactive le sous-compte.
+    for (const mb of membres) {
+      if (mb.vacant) {
+        const nom = REMPL[nRempl % REMPL.length]; nRempl++;
+        const rattrapage = slot * p.c; if (rattrapage > 0) cpt.depot += rattrapage;
+        const epargnant = mb.remplToType === 'epargnant';
+        const acces = epargnant ? "en ÉPARGNANT (pas d'enchère ce cycle)" : "avec droit d'enchère";
+        const txtRatt = rattrapage > 0 ? ` et rattrape ${slot} cotisation${slot > 1 ? 's' : ''}` : '';
+        flux(mvt, nom, rattrapage > 0 ? 'rattrapage' : 'remplacement', `${nom} remplace la place vacante ${acces}${txtRatt}`, rattrapage);
+        // réactivation du sous-compte
+        mb.aFui = false; mb.vacant = false; mb.aEncaisse = false; mb.tEnc = null;
+        mb.cotise = rattrapage; mb.nom = nom; mb.filtreScore = false;
+        mb.candidatEmp = !epargnant;       // épargnant : pas d'accès enchère ce cycle
+        mb.remplToType = null;
+      }
+    }
+
     // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
-    // Le remplaçant entre comme ÉPARGNANT (cotisé + bonus, pas de droit d'enchère ce cycle),
-    // n'hérite PAS de la dette ; le trou reste porté par la cascade.
     for (const mb of membres) {
       if (mb.aEncaisse && !mb.aFui) {
         const moisR = Math.max(1, vie - mb.tEnc);
-        const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.33) : 1);
+        const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.red_fuite_eligible ?? 0.33) : 1);
         const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
         if (rng() < pf) {
+          // PERTE = avance non amortie du fuyard (pr.restant). Absorption FGE -> cap SFD -> rupture.
           let trou = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
-          flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaissé T${mb.tEnc}) disparaît — avance non remboursée`, -trou);
+          flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaisseur, tour T${mb.tEnc}) fuit — perte = avance non remboursée ; place vacante ce mois`, -trou);
           if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
-          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-          const rattrapage = slot * p.c;
-          if (rattrapage > 0) { cpt.depot += rattrapage; flux(mvt, nom, 'rattrapage', `${nom} remplace ${mb.nom} en ÉPARGNANT (pas d'enchère ce cycle) et rattrape ${slot} cotisation${slot > 1 ? 's' : ''}`, rattrapage); }
-          else flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} en ÉPARGNANT (pas d'enchère ce cycle)`, 0);
-          // le rattrapage ne réduit PAS le trou : la dette du fuyard reste sur la cascade
-          if (p.mode === 'garantie') {
-            let reste = trou;
-            const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; if (pf2 > 0) { fge -= pf2; reste -= pf2; flux(mvt, 'FGE', 'couverture', `FGE absorbe le trou (première perte)`, -pf2); }
-            if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1); const dispo = Math.max(0, plaf - trancheUtil); const ps = Math.min(dispo, reste); if (ps > 0) { trancheUtil += ps; reste -= ps; flux(mvt, 'SFD', 'couverture', `tranche junior SFD absorbe le reliquat (peau dans le jeu)`, -ps); } }
-            if (reste > 1e-9) flux(mvt, '—', 'résiduel', `résiduel non couvert (promesse en tension)`, -reste);
-          } else {
-            flux(mvt, 'Groupe', 'résiduel', `tontine nue : le groupe subit la perte`, -trou);
-          }
-          // le sous-compte repris devient un épargnant actif (cotisé = rattrapage + cotisations à venir)
-          mb.aEncaisse = false; mb.tEnc = null; mb.cotise = rattrapage; mb.candidatEmp = false; mb.nom = nom;
+          // 1) FGE absorbe en premier (première perte)
+          const parFge = p.fge_actif ? Math.min(fge, trou) : 0; if (parFge > 0) { fge -= parFge; trou -= parFge; flux(mvt, 'FGE', 'couverture', `FGE absorbe la perte (première perte)`, -parFge); }
+          // 2) cap SFD = K cotisations, CUMULÉ sur le pool (skin in the game)
+          const capSfd = (p.cap_sfd_cotisations || 0) * p.c; const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0)); const parSfd = Math.min(dispoSfd, trou); if (parSfd > 0) { cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; trou -= parSfd; flux(mvt, 'SFD', 'couverture', `tranche SFD absorbe (skin in the game)`, -parSfd); }
+          // 3) au-delà du cap -> RUPTURE du dispositif (promesse cassée)
+          if (trou > 1e-9) { flux(mvt, '—', 'rupture', `dispositif arrêté : perte > FGE + cap SFD`, -trou); cpt.rompu = true; }
+          // place vacante : remplacement matérialisé au TOUR SUIVANT (délai d'un tour)
+          mb.aFui = true; mb.vacant = true; mb.remplToType = 'epargnant';
         }
       }
     }
     // 1b. CAS 2 — arrêt d'un NON-encaisseur (paramétrable, off par défaut) : remboursé + remplaçant rattrape.
     if ((p.taux_arret_non_encaisseur || 0) > 0) {
       for (const mb of membres) {
-        if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc && rng() < p.taux_arret_non_encaisseur) {
+        if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc && !mb.vacant && rng() < p.taux_arret_non_encaisseur) {
           const rembourse = mb.cotise; cpt.depot = Math.max(0, cpt.depot - rembourse);
-          flux(mvt, mb.nom, 'remboursement', `${mb.nom} arrête avant d'encaisser — remboursé de ses cotisations`, -rembourse);
-          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-          const rattrapage = slot * p.c; cpt.depot += rattrapage;
-          if (rattrapage > 0) flux(mvt, nom, 'rattrapage', `${nom} reprend la place et rattrape ${slot} cotisation${slot > 1 ? 's' : ''} des tours passés`, rattrapage);
-          else flux(mvt, nom, 'remplacement', `${nom} reprend la place (aucun tour passé à rattraper)`, 0);
-          mb.cotise = rattrapage; mb.remplaceNonEnc = true; mb.nom = nom;
+          flux(mvt, mb.nom, 'remboursement', `${mb.nom} (non-encaisseur) arrête — remboursé de ses cotisations ; place vacante ce mois`, -rembourse);
+          // place vacante : remplacement (avec droit d'enchère) matérialisé au TOUR SUIVANT
+          mb.aFui = true; mb.vacant = true; mb.remplToType = 'emprunteur';
         }
       }
     }
 
-    // 2. cotisations → dépôt commun
+    // 2. cotisations → dépôt commun. TOUT LE MONDE cotise c (encaisseurs compris) ; un fuyard non
+    // remplacé manque (le compteur tombe à 9, puis remonte à 10 dès qu'il est remplacé).
     const actifs = membres.filter(mb => !mb.aFui);
     let potColl = 0, nCot = 0;
-    for (const mb of actifs) if (!mb.aEncaisse) { cpt.depot += p.c; potColl += p.c; mb.cotise += p.c; nCot++; }
-    flux(mvt, 'Membres', 'cotisation', `${nCot} cotisations versées au dépôt commun`, nCot * p.c);
+    for (const mb of actifs) { cpt.depot += p.c; potColl += p.c; mb.cotise += p.c; nCot++; }
+    flux(mvt, 'Membres', 'cotisation', `${nCot} membres présents versent leur cotisation au dépôt`, nCot * p.c);
     if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; flux(mvt, 'SFD', 'rémunération', `intérêts versés sur le dépôt (rémunération de l'épargne)`, it); }
 
     const dureePret = Math.max(1, m - (slot + 1));
     const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
     let phase = phaseEmprunteur ? 'emprunteur' : 'épargnant';
 
-    // 3. attribution + décaissement
-    if (phaseEmprunteur) {
+    // 3. attribution + décaissement — sauf si le pool est ROMPU (dispositif arrêté).
+    if (cpt.rompu) {
+      flux(mvt, '—', 'arrêt', `dispositif arrêté (pool rompu) : plus d'attribution ni de service`, 0);
+    } else if (phaseEmprunteur) {
       const nonEnc = actifs.filter(mb => !mb.aEncaisse);
       let elig = nonEnc.filter(mb => !p.deux_populations || mb.candidatEmp);
       if (!elig.length) elig = nonEnc;                 // jamais de gel
@@ -480,13 +506,13 @@ export function journalPool(p, graine) {
           if (bideur) flux(mvt, gagnant.nom, 'enchère', `${gagnant.nom} remporte l'enchère (bid = ${Math.round(bid)})`, 0);
           else flux(mvt, gagnant.nom, 'attribution', `${gagnant.nom} prend le tour (sans surenchère)`, 0);
           flux(mvt, 'SFD', 'avance', `la SFD avance le net à ${gagnant.nom} (crédit-relais sur ${dureePret} mois)`, net);
-          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true, tOctroi: t }); cpt.decaisseCumule += net;
           flux(mvt, 'SFD', 'intérêts', `intérêts du crédit-relais (retenus dans le bid)`, interets);
           if (primeGar > 0) { fge += primeGar; flux(mvt, 'FGE', 'prime', `prime de garantie de ${gagnant.nom} → FGE`, primeGar); }
           flux(mvt, 'Opérateur', 'marge', `marge Opérateur (retenue dans le bid)`, margeOp);
           if (surplus > 0) { const partEp = (p.deux_populations ? p.part_bids_aux_epargnants : 0) * surplus; if (partEp > 0) { cpt.depot += partEp; flux(mvt, 'Épargnants', 'rémunération', `part du surplus d'enchère reversée aux épargnants`, partEp); } flux(mvt, 'Opérateur', 'surplus', `surplus d'enchère conservé par l'Opérateur`, surplus - partEp); }
         } else {
-          net = pot; cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          net = pot; cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true, tOctroi: t }); cpt.decaisseCumule += net;
           flux(mvt, gagnant.nom, 'attribution', `${gagnant.nom} prend le tour (tontine nue, sans frais)`, 0);
           flux(mvt, 'SFD', 'avance', `la SFD avance le pot à ${gagnant.nom}`, net);
         }
@@ -504,20 +530,23 @@ export function journalPool(p, graine) {
         else gagnant = eparg[Math.floor(rng() * eparg.length)];
         gagnant.estEpargnant = true; gagnant.aEncaisse = true; gagnant.tEnc = t;
         flux(mvt, gagnant.nom, 'service', `${gagnant.nom} (épargnant le plus sûr restant) reçoit le pot`, 0);
-        const pris = Math.min(cpt.depot, pot); cpt.depot -= pris; flux(mvt, 'Dépôt', 'service', `pot payé depuis le dépôt commun`, -pris);
-        let complement = pot - pris;
-        if (complement > 1e-9) {
-          const pf = p.fge_actif ? Math.min(fge, complement) : 0; if (pf > 0) { fge -= pf; complement -= pf; flux(mvt, 'FGE', 'couverture', `complément couvert par le FGE`, -pf); }
-          if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1); const dispo = Math.max(0, plaf - trancheUtil); const ps = Math.min(dispo, complement); if (ps > 0) { trancheUtil += ps; complement -= ps; flux(mvt, 'SFD', 'couverture', `complément couvert par la tranche SFD`, -ps); } }
-          if (complement > 1e-9) flux(mvt, '—', 'résiduel', `résiduel non couvert (promesse en tension)`, -complement);
+        // servi depuis le dépôt ; si insuffisant, le complément passe par FGE -> cap SFD -> rupture.
+        const pris = Math.min(Math.max(cpt.depot, 0), pot); cpt.depot -= pris;
+        flux(mvt, 'Dépôt', 'service', `pot payé depuis le dépôt`, -pris);
+        let manque = pot - pris;
+        if (manque > 1e-9) {
+          const parFge = p.fge_actif ? Math.min(fge, manque) : 0; if (parFge > 0) { fge -= parFge; manque -= parFge; flux(mvt, 'FGE', 'couverture', `FGE complète le pot (première perte)`, -parFge); }
+          const capSfd = (p.cap_sfd_cotisations || 0) * p.c; const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0)); const parSfd = Math.min(dispoSfd, manque); if (parSfd > 0) { cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; manque -= parSfd; flux(mvt, 'SFD', 'couverture', `tranche SFD complète le pot (skin in the game)`, -parSfd); }
+          if (manque > 1e-9) { flux(mvt, '—', 'rupture', `dispositif arrêté : pot non couvert > FGE + cap SFD`, -manque); cpt.rompu = true; }
         }
         gagnant.recu += pot;
       }
     }
 
-    // 4. récupération des prêts (rembourse le dépôt)
-    let recup = 0; for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; recup += pa; }
-    if (recup > 0.5) flux(mvt, 'Dépôt', 'recouvrement', `mensualités des crédits-relais récupérées sur le dépôt`, recup);
+    // 4. récupération des prêts : la SFD PRÉLÈVE la mensualité SUR le dépôt (rembourse sa créance) —
+    // pas le mois de l'octroi (1er prélèvement le tour suivant). Cf. modèle unifié §3d.
+    let recup = 0; for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9 && pr.tOctroi < t) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; recup += pa; }
+    if (recup > 0.5) flux(mvt, 'SFD', 'mensualité', `mensualités des crédits-relais : l'avance est amortie, le dépôt se reconstitue`, recup);
 
     const expo = cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     tours.push({ tour: t, cycle, slot: slot + 1, phase, mvt, depot: cpt.depot, fge, expo });
@@ -592,4 +621,104 @@ export function decompositionCout(p) {
     }
   }
   return rows;
+}
+
+// ---- CADRAGE DU RISQUE (optimisation sous contrainte SFD exprimée en % du pot) ----
+// Taux d'usure annualisé implicite du membre le plus exposé (tour 1), à partir d'un résultat
+// monteCarlo `res` et des params `p`. pot = (M-1)*c ; d = M-1 mois de crédit au tour 1.
+function tauxUsureConfig(res, p) {
+  const m = p.m_membres, pot = (m - 1) * p.c, d = m - 1;
+  if (pot <= 0) return 0;
+  return (res.coutTour1.moy / pot) * (12 / Math.max(1, d));
+}
+
+// cadrageRisque(base, opts) : grid search sur les leviers de tontine sous contrainte SFD
+// exprimée en % du pot (fracPot). Conversion : cap_sfd_cotisations = fracPot * (M-1).
+// Analyse PAR POOL (n_pools forcé à 1). Retourne { rows, pareto, capMin[, tronque] }.
+export function cadrageRisque(base, opts = {}) {
+  const arrOr = (v, def) => (Array.isArray(v) && v.length ? v : [def]);
+  const caps = arrOr(opts.caps, undefined).map(x => x === undefined ? null : x);
+  const Ms = arrOr(opts.Ms, base.m_membres);
+  const cs = arrOr(opts.cs, base.c);
+  const durees = arrOr(opts.durees, base.n_cycles);
+  const partsSurs = arrOr(opts.partsSurs, base.part_eligibles_enchere);
+  const partsEpargnant = arrOr(opts.partsEpargnant, base.part_epargnant);
+  const runs = opts.runs || 300;
+  const cibles = Array.isArray(opts.cibles) ? opts.cibles : [];
+  // cap par défaut si non fourni : on dérive le fracPot du cap_sfd_cotisations de base sur M de base.
+  const capDefaut = base.cap_sfd_cotisations / Math.max(1, (base.m_membres - 1));
+  const capsEff = caps.map(x => x === null ? capDefaut : x);
+
+  const MAX_COMBOS = 2000;
+  const total = capsEff.length * Ms.length * cs.length * durees.length * partsSurs.length * partsEpargnant.length;
+  let tronque = false;
+  let budget = total;
+  if (total > MAX_COMBOS) { tronque = true; budget = MAX_COMBOS; }
+
+  const rows = [];
+  let nFaites = 0;
+  outer:
+  for (const cap of capsEff) {
+    for (const M of Ms) {
+      for (const c of cs) {
+        for (const duree of durees) {
+          for (const partSurs of partsSurs) {
+            for (const partEparg of partsEpargnant) {
+              if (nFaites >= budget) break outer;
+              nFaites++;
+              const capCotis = cap * (M - 1);
+              const cfg = { ...base, n_pools: 1, m_membres: M, c, n_cycles: duree,
+                            part_eligibles_enchere: partSurs, part_epargnant: partEparg,
+                            cap_sfd_cotisations: capCotis };
+              try {
+                const res = monteCarlo(cfg, runs, 12345);
+                const usure = tauxUsureConfig(res, cfg);
+                rows.push({
+                  capPot: cap, capCotis, M, c, duree, partSurs, partEparg,
+                  promesse: res.taux_continuite_pool,
+                  residuel: res.residuel.moy,
+                  perteSfd: res.perteSfd.moy,
+                  pnlPool: res.margePool.moy,
+                  usure,
+                  usureOk: usure <= base.taux_usure_annuel,
+                });
+              } catch (e) {
+                // combinaison instable : on la saute sans casser le grid.
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // FRONTIÈRE DE PARETO : pour chaque valeur de capPot, la meilleure config (promesse max parmi
+  // usureOk=true ; à défaut promesse max). Triée par capPot croissant.
+  const parCap = new Map();
+  for (const r of rows) {
+    const k = r.capPot;
+    if (!parCap.has(k)) parCap.set(k, []);
+    parCap.get(k).push(r);
+  }
+  const pickBest = (list) => {
+    const ok = list.filter(r => r.usureOk);
+    const pool = ok.length ? ok : list;
+    return pool.reduce((b, r) => r.promesse > b.promesse ? r : b, pool[0]);
+  };
+  const pareto = [...parCap.entries()]
+    .map(([, list]) => pickBest(list))
+    .filter(Boolean)
+    .sort((a, b) => a.capPot - b.capPot);
+
+  // capMin[cible] : plus petit capPot pour lequel au moins une config atteint promesse>=cible
+  // avec usureOk. null si jamais atteint.
+  const capMin = {};
+  for (const cible of cibles) {
+    const ok = rows.filter(r => r.usureOk && r.promesse >= cible).map(r => r.capPot);
+    capMin[cible] = ok.length ? Math.min(...ok) : null;
+  }
+
+  const out = { rows, pareto, capMin };
+  if (tronque) out.tronque = true;
+  return out;
 }

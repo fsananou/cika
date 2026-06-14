@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout, journalPool } from './moteur.js?v=20';
+import { DEFAUTS, monteCarlo, decompositionCout, journalPool, cadrageRisque } from './moteur.js?v=20';
 
 // mode unitaire : quand la cotisation = 1, on lit les montants en multiples de cotisation (×c)
 const unitaire = () => PARAMS && PARAMS.c === 1;
@@ -17,9 +17,11 @@ let PARAMS = { ...DEFAUTS, _runs: 80 };
 function montrerOnglet(onglet) {
   document.querySelectorAll('#ongletSeg .seg-btn').forEach(x => x.classList.toggle('active', x.dataset.onglet === onglet));
   $('vue-parametres').hidden = (onglet !== 'parametres');
+  $('vue-cadrage').hidden = (onglet !== 'cadrage');
   $('vue-resultats').hidden = (onglet !== 'resultats');
   $('vue-flux').hidden = (onglet !== 'flux');
   if (onglet === 'flux') renderFlux();
+  if (onglet === 'cadrage') renderCadrageCtrls();
 }
 document.querySelectorAll('#ongletSeg .seg-btn').forEach(b => b.addEventListener('click', () => montrerOnglet(b.dataset.onglet)));
 function allerResultats() { montrerOnglet('resultats'); }
@@ -65,7 +67,7 @@ const SCHEMA = [
     { k: 'g_cotisations', nom: 'Consignation pour bider tôt', d: "Garantie (en nb de cotisations) saisie si fuite.", t: 'range', min: 0, max: 3, step: 1 },
     { k: 'fge_actif', nom: 'FGE (fonds de garantie)', d: "Le fonds endogène (primes + saisies) qui absorbe en premier.", t: 'bool' },
     { k: 'tranche_sfd_active', nom: 'Tranche SFD', d: "La SFD absorbe après le FGE (sa peau dans le jeu).", t: 'bool' },
-    { k: 'plafond_tranche_sfd_frac', nom: 'Plafond tranche SFD', d: "Jusqu'où la SFD couvre, en % des avances. Au-delà = résiduel.", t: 'range', min: 0.01, max: 0.15, step: 0.01, fmt: 'pct' },
+    { k: 'cap_sfd_cotisations', nom: 'Cap SFD (en cotisations)', d: "Skin in the game : la SFD absorbe jusqu'à ce nombre de cotisations de pertes par pool (après le FGE). Au-delà = rupture du dispositif.", t: 'range', min: 0, max: 10, step: 1 },
     { k: 'fge_mutualise', nom: 'FGE mutualisé entre pools', d: "Non = chaque pool autonome (la solidité ne dépend que du pool, cadre « 1 pool »). Oui = un pool sain peut renflouer un pool en fuite.", t: 'bool' },
   ]},
   { grp: 'Profils & cycle 1', desc: "Les premiers tours du cycle 1 sont réservés (en interne) aux profils sûrs, servis tant qu'il en reste ; ils fuient moins.", items: [
@@ -306,6 +308,89 @@ function renderFlux() {
   $('fluxJournal').innerHTML = html;
 }
 $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux(); });
+
+// ---- page CADRAGE DU RISQUE ----
+// On part des paramètres comportementaux/stress courants (PARAMS) et on balaie la structure
+// (M, part de sûrs, durée) pour chaque niveau de cap SFD. Contrainte d'usure UEMOA respectée.
+let cadrageCtrlsRendus = false;
+function renderCadrageCtrls() {
+  if (cadrageCtrlsRendus) return; cadrageCtrlsRendus = true;
+  $('cadrageCtrls').innerHTML = `
+    <div class="cadrage-grid">
+      <label>Cap SFD testés (% du pot)<span class="cadrage-hint">skin in the game</span>
+        <select id="cad_caps" multiple size="6">
+          ${[5,10,15,20,30,40].map(v => `<option value="${v / 100}" ${[10, 15, 20].includes(v) ? 'selected' : ''}>${v}%</option>`).join('')}
+        </select></label>
+      <label>Tailles de pool M
+        <select id="cad_Ms" multiple size="6">
+          ${[6, 8, 10, 12, 15].map(v => `<option value="${v}" ${[6, 8, 10, 12].includes(v) ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></label>
+      <label>Part de profils sûrs
+        <select id="cad_surs" multiple size="6">
+          ${[40, 55, 70, 85].map(v => `<option value="${v / 100}" ${[55, 70, 85].includes(v) ? 'selected' : ''}>${v}%</option>`).join('')}
+        </select></label>
+      <label>Durée (cycles)
+        <select id="cad_durees" multiple size="6">
+          ${[1, 2, 3].map(v => `<option value="${v}" ${v === PARAMS.n_cycles ? 'selected' : ''}>${v}</option>`).join('')}
+        </select></label>
+      <label>Cibles de promesse
+        <select id="cad_cibles" multiple size="6">
+          ${[90, 95, 99].map(v => `<option value="${v / 100}" selected>${v}%</option>`).join('')}
+        </select></label>
+    </div>
+    <p class="cadrage-note">Le balayage utilise vos réglages de stress/comportement courants (taux de fuite, mitigations…). Modifiez-les dans l'onglet Paramètres pour cadrer dans d'autres conditions.</p>`;
+}
+const cadSel = id => Array.from($(id).selectedOptions).map(o => +o.value);
+
+let dernierCadrage = null;
+function lancerCadrage() {
+  $('btnCadrage').textContent = 'Calcul…'; $('cadrageStatus').textContent = '';
+  setTimeout(() => {
+    const opts = {
+      caps: cadSel('cad_caps'), Ms: cadSel('cad_Ms'), partsSurs: cadSel('cad_surs'),
+      durees: cadSel('cad_durees'), cibles: cadSel('cad_cibles'), runs: 250,
+    };
+    const base = { ...PARAMS };
+    const r = cadrageRisque(base, opts);
+    dernierCadrage = r;
+    drawCadrage(r);
+    renderCadrageTable(r);
+    $('btnCadrage').textContent = 'Lancer le cadrage';
+    $('cadrageStatus').textContent = `${r.rows.length} configurations évaluées` + (r.tronque ? ' (tronqué à 2000)' : '');
+  }, 20);
+}
+$('btnCadrage').addEventListener('click', lancerCadrage);
+
+function drawCadrage(r) {
+  const cv = $('cadrageCanvas'); if (!cv) return;
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
+  const pts = r.pareto; if (!pts || !pts.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Lancez le cadrage pour voir la frontière.', 16, H / 2); $('cadrageLegende').innerHTML = ''; return; }
+  const padL = 48, padR = 14, padB = 28, padT = 14, plotW = W - padL - padR, plotH = H - padB - padT;
+  const xs = i => padL + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
+  const ys = v => padT + plotH - v * plotH;            // promesse 0..1
+  ctx.strokeStyle = '#f3f4f6'; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
+  for (let g = 0; g <= 4; g++) { const yy = padT + (g / 4) * plotH, val = 1 - g / 4; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText((val * 100).toFixed(0) + '%', padL - 6, yy + 3); }
+  // ligne promesse
+  ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(xs(i), ys(p.promesse)) : ctx.moveTo(xs(i), ys(p.promesse))); ctx.stroke();
+  pts.forEach((p, i) => {
+    ctx.fillStyle = p.usureOk ? '#0f4c4a' : '#dc2626'; ctx.beginPath(); ctx.arc(xs(i), ys(p.promesse), 3.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#6b7280'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif';
+    ctx.fillText((p.capPot * 100).toFixed(0) + '%', xs(i), H - 9);
+    ctx.fillText('M' + p.M, xs(i), ys(p.promesse) - 8);
+  });
+  $('cadrageLegende').innerHTML =
+    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> promesse atteignable (meilleure config par cap)</span>` +
+    `<span class="lg"><i class="sw" style="background:#dc2626"></i> usure dépassée</span>` +
+    `<span class="lg-note">Axe X = cap SFD demandé (% du pot). Étiquette = M optimal. ${Object.entries(r.capMin).map(([c, v]) => `Cible ${(+c * 100).toFixed(0)}% : ${v == null ? 'hors d\'atteinte' : 'cap min ' + (v * 100).toFixed(0) + '%'}`).join(' · ')}</span>`;
+}
+
+function renderCadrageTable(r) {
+  const top = r.rows.slice().filter(x => x.usureOk).sort((a, b) => b.promesse - a.promesse).slice(0, 12);
+  if (!top.length) { $('cadrageTable').innerHTML = '<p class="muted">Aucune configuration ne respecte le seuil d\'usure sur cette grille.</p>'; return; }
+  const tb = top.map(x => `<tr><td>${(x.capPot * 100).toFixed(0)}%</td><td>${x.M}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
+  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Cap SFD</th><th>M</th><th>Sûrs</th><th>Cycles</th><th>Promesse/pool</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
+}
 
 // ---- init ----
 PARAMS._runs = 80;

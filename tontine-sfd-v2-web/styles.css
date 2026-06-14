@@ -106,6 +106,15 @@ table.data td.num{font-weight:600}
 .vuln-legende .sw.line{height:3px}
 .vuln-legende .lg-note{flex-basis:100%;color:var(--ink);font-size:11px;margin-top:2px}
 
+/* page Cadrage du risque */
+.cadrage-grid{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 4px}
+.cadrage-grid label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.cadrage-grid .cadrage-hint{font-weight:400;text-transform:none;letter-spacing:0;color:var(--g400);font-size:10px}
+.cadrage-grid select{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:4px;color:var(--ink);background:#fff;min-width:120px}
+.cadrage-grid option{padding:2px 4px}
+.cadrage-note{color:var(--muted);font-size:11px;margin-top:8px}
+.cadrage-ctrls{margin-bottom:6px}
+
 /* ---- page Flux ---- */
 .flux-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px}
 .flux-titre{font-size:14px;font-weight:700}
