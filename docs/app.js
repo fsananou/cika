@@ -114,12 +114,16 @@ const PRESETS = {
 };
 
 // ---- rendu des paramètres ----
-function renderParametres() {
-  $('paramGroupes').innerHTML = SCHEMA.map(g => `
+const grpHtml = g => `
     <details class="param-groupe" open>
       <summary>${g.grp}<span class="grp-desc">${g.desc}</span></summary>
       ${g.items.map(it => paramRow(it)).join('')}
-    </details>`).join('');
+    </details>`;
+function renderParametres() {
+  // « Structure du cercle » va sur la page Cadrage (#paramStructure) ; le reste sur Paramètres.
+  const estStructure = g => g.grp === 'Structure du cercle';
+  $('paramGroupes').innerHTML = SCHEMA.filter(g => !estStructure(g)).map(grpHtml).join('');
+  const struct = $('paramStructure'); if (struct) struct.innerHTML = SCHEMA.filter(estStructure).map(grpHtml).join('');
   SCHEMA.flatMap(g => g.items).forEach(it => attachParam(it));
 }
 function paramRow(it) {
@@ -395,6 +399,7 @@ function renderCadrageTable(r) {
 // ---- init ----
 PARAMS._runs = 80;
 renderParametres();
+renderCadrageCtrls();   // peuple les contrôles de la page Cadrage dès le départ (sinon page vide)
 $('o_runs').textContent = PARAMS._runs;
 $('c_runs').value = PARAMS._runs;
 lancer();

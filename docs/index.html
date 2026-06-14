@@ -22,38 +22,15 @@
   </div>
 </nav>
 
-<!-- ============ ONGLET PARAMÈTRES (tous les leviers + Lancer) ============ -->
+<!-- ============ ONGLET PARAMÈTRES (comportement, stress, profils, couverture) ============ -->
 <main id="vue-parametres">
   <section class="wrap">
-    <div class="param-head">
-      <div class="card preset-card">
-        <div class="preset-row">
-          <div>
-            <h3>Scénario</h3>
-            <div class="seg" id="presetSeg">
-              <button class="seg-btn active" data-preset="nominal">Nominal</button>
-              <button class="seg-btn" data-preset="comportemental">Stress comportemental</button>
-              <button class="seg-btn" data-preset="macro">Stress macro</button>
-              <button class="seg-btn" data-preset="combine">Combiné</button>
-              <button class="seg-btn" data-preset="bids_faibles">Peu d'enchères</button>
-            </div>
-          </div>
-          <div class="preset-actions">
-            <label class="runs-label">Précision (runs) : <output id="o_runs"></output><input type="range" id="c_runs" min="40" max="300" step="40"></label>
-            <div class="run-actions">
-              <button id="btnRun" class="btn big">Lancer</button>
-              <button id="btnReset" class="btn ghost">Défaut</button>
-            </div>
-            <span class="param-status" id="simStatus"></span>
-          </div>
-        </div>
-      </div>
-      <div id="paramGroupes" class="param-cols"></div>
-    </div>
+    <p class="flux-sub" style="margin-bottom:14px">Les leviers de comportement, de stress et de couverture. La structure du cercle (taille, cotisation, durée) et le lancement se règlent dans l'onglet <b>Cadrage du risque</b>.</p>
+    <div id="paramGroupes" class="param-cols"></div>
   </section>
 </main>
 
-<!-- ============ ONGLET CADRAGE DU RISQUE (optimisation des paramètres) ============ -->
+<!-- ============ ONGLET CADRAGE DU RISQUE (structure + optimisation + lancement) ============ -->
 <main id="vue-cadrage" hidden>
   <section class="wrap">
     <div class="card">
@@ -72,6 +49,32 @@
     <div class="card">
       <h3>Configurations optimales <span class="hint">triées par promesse · usure respectée</span></h3>
       <div id="cadrageTable" class="table-wrap"></div>
+    </div>
+
+    <!-- structure retenue + lancement de la simulation détaillée -->
+    <div class="card">
+      <h3>Structure retenue & lancement <span class="hint">réglez puis lancez pour voir les résultats détaillés</span></h3>
+      <div id="paramStructure" class="param-cols"></div>
+      <div class="preset-row" style="margin-top:14px">
+        <div>
+          <h3>Scénario</h3>
+          <div class="seg" id="presetSeg">
+            <button class="seg-btn active" data-preset="nominal">Nominal</button>
+            <button class="seg-btn" data-preset="comportemental">Stress comportemental</button>
+            <button class="seg-btn" data-preset="macro">Stress macro</button>
+            <button class="seg-btn" data-preset="combine">Combiné</button>
+            <button class="seg-btn" data-preset="bids_faibles">Peu d'enchères</button>
+          </div>
+        </div>
+        <div class="preset-actions">
+          <label class="runs-label">Précision (runs) : <output id="o_runs"></output><input type="range" id="c_runs" min="40" max="300" step="40"></label>
+          <div class="run-actions">
+            <button id="btnRun" class="btn big">Lancer la simulation</button>
+            <button id="btnReset" class="btn ghost">Défaut</button>
+          </div>
+          <span class="param-status" id="simStatus"></span>
+        </div>
+      </div>
     </div>
   </section>
 </main>
