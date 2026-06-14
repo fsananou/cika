@@ -649,9 +649,11 @@ export function cadrageRisque(base, opts = {}) {
   const rDepots = arrOr(opts.rDepots, base.r_depot_annuel);
   const runs = opts.runs || 300;
   const cibles = Array.isArray(opts.cibles) ? opts.cibles : [];
-  // cap par défaut si non fourni : on dérive le fracPot du cap_sfd_cotisations de base sur M de base.
+  // CAP SFD : soit un MONTANT ABSOLU en XOF (opts.capAbs) — qui lie c et M car cap/perte ne se
+  // simplifie plus — soit, à défaut, exprimé en % du pot (opts.caps). L'absolu est prioritaire.
+  const capAbs = (typeof opts.capAbs === 'number' && opts.capAbs > 0) ? opts.capAbs : null;
   const capDefaut = base.cap_sfd_cotisations / Math.max(1, (base.m_membres - 1));
-  const capsEff = caps.map(x => x === null ? capDefaut : x);
+  const capsEff = capAbs ? [null] : caps.map(x => x === null ? capDefaut : x);
 
   const MAX_COMBOS = 2000;
   const total = capsEff.length * Ms.length * cs.length * durees.length * partsSurs.length * partsEpargnant.length * rDepots.length;
@@ -671,7 +673,10 @@ export function cadrageRisque(base, opts = {}) {
               for (const rDepot of rDepots) {
                 if (nFaites >= budget) break outer;
                 nFaites++;
-                const capCotis = cap * (M - 1);
+                const pot = (M - 1) * c;
+                // cap en nombre de cotisations : depuis l'absolu (capAbs/c) ou depuis le % du pot
+                const capCotis = capAbs ? (capAbs / c) : (cap * (M - 1));
+                const capPotEff = capAbs ? (capAbs / pot) : cap;   // % équivalent du pot
                 const cfg = { ...base, n_pools: 1, m_membres: M, c, n_cycles: duree,
                               part_eligibles_enchere: partSurs, part_epargnant: partEparg,
                               r_depot_annuel: rDepot, cap_sfd_cotisations: capCotis };
@@ -679,7 +684,7 @@ export function cadrageRisque(base, opts = {}) {
                   const res = monteCarlo(cfg, runs, 12345);
                   const usure = tauxUsureConfig(res, cfg);
                   rows.push({
-                    capPot: cap, capCotis, M, c, duree, partSurs, partEparg, rDepot,
+                    capPot: capPotEff, capAbs: capAbs || (cap * pot), capCotis, M, c, duree, partSurs, partEparg, rDepot,
                     promesse: res.taux_continuite_pool,
                     residuel: res.residuel.moy,
                     perteSfd: res.perteSfd.moy,

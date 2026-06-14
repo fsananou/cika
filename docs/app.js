@@ -326,8 +326,10 @@ const BANDES = [
   { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
   { k: 'rDepots',    nom: 'Rémunération dépôts',   hint: 'annuel, mensualisé', min: 0,  max: 0.10,   pas: 0.01,  lo: 0.05,  hi: 0.05,   fmt: 'pct' },
 ];
-const CAP = { min: 0.02, max: 0.50, pas: 0.01, val: 0.15 };   // cap SFD unique (% du pot)
-const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? Math.round(v / 1000) + 'k' : '' + v;
+// CAP SFD = MONTANT ABSOLU par pool (XOF). C'est lui qui lie c et M (un montant fixe ne se
+// simplifie pas avec c) : à gros c, M doit baisser pour que le capital exposé tienne sous le cap.
+const CAP = { min: 50000, max: 2000000, pas: 50000, val: 500000 };
+const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.round(v / 1000) + 'k') : '' + v;
 // valeurs balayées sur [lo,hi] au pas b.pas, mais bornées à MAX_PTS (échantillonnage régulier)
 const MAX_PTS = 8;
 function rangeVals(b) {
@@ -356,20 +358,20 @@ function syncBande(b) {
 let cadrageRendu = false;
 function renderCadrageCtrls() {
   if (cadrageRendu) return; cadrageRendu = true;
-  // curseur CAP unique (la contrainte) + les bandes des autres leviers
+  // curseur CAP unique (montant absolu, la contrainte) + les bandes des autres leviers
   const capRow = `<div class="bande cap-unique">
-    <div class="bande-tete"><span class="bande-nom">Cap SFD (% du pot)</span><span class="bande-hint">skin in the game — contrainte</span><span class="bande-val" id="bv_cap"></span></div>
+    <div class="bande-tete"><span class="bande-nom">Cap SFD (montant / pool)</span><span class="bande-hint">exposition max que la SFD engage — contrainte</span><span class="bande-val" id="bv_cap"></span></div>
     <input type="range" id="cap_slider" min="${CAP.min}" max="${CAP.max}" step="${CAP.pas}" value="${CAP.val}" style="width:100%;accent-color:var(--acc)"></div>`;
   $('cadrageBandes').innerHTML = capRow + BANDES.map(bandeRow).join('');
-  $('cap_slider').addEventListener('input', e => { CAP.val = +e.target.value; $('bv_cap').textContent = Math.round(CAP.val * 100) + '%'; });
-  $('bv_cap').textContent = Math.round(CAP.val * 100) + '%';
+  $('cap_slider').addEventListener('input', e => { CAP.val = +e.target.value; $('bv_cap').textContent = fmtB(CAP.val, 'k'); });
+  $('bv_cap').textContent = fmtB(CAP.val, 'k');
   BANDES.forEach(b => {
     ['blo_', 'bhi_'].forEach(pre => $(pre + b.k).addEventListener('input', () => { syncBande(b); }));
     syncBande(b);
   });
 }
 $('btnCadrageReset').addEventListener('click', () => {
-  CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
+  CAP.val = 500000; $('cap_slider').value = CAP.val; $('bv_cap').textContent = fmtB(CAP.val, 'k');
   const def = { Ms: [6, 12], cs: [2000, 50000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
   BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
 });
@@ -378,7 +380,7 @@ let dernierCadrage = null;
 function lancerCadrage() {
   $('btnCadrage').textContent = 'Calcul…'; $('cadrageStatus').textContent = '';
   setTimeout(() => {
-    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99], caps: [CAP.val] };  // cap SFD = contrainte unique
+    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99], capAbs: CAP.val };  // cap SFD = montant absolu (contrainte)
     BANDES.forEach(b => { opts[b.k] = rangeVals(b); });
     const r = cadrageRisque({ ...PARAMS }, opts);
     dernierCadrage = r;
@@ -403,7 +405,7 @@ function cfgCard(titre, x) {
     <div class="cfg-grid">
       <div class="cfg-kpi"><span class="lbl">Perte sèche / pool</span><span class="val ${x.residuel <= pot * 0.01 ? 'ok' : x.residuel <= pot * 0.05 ? '' : 'bad'}">${fmtM(x.residuel)}</span></div>
       <div class="cfg-kpi"><span class="lbl">Promesse / pool</span><span class="val ${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span></div>
-      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${(x.capPot * 100).toFixed(0)}% (${fmtM(x.capPot * pot)})</span></div>
+      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${fmtM(x.capAbs)} <span class="pp" style="font-weight:400">(${(x.capPot * 100).toFixed(0)}% du pot)</span></span></div>
       <div class="cfg-kpi"><span class="lbl">Taille M</span><span class="val">${x.M}</span></div>
       <div class="cfg-kpi"><span class="lbl">Cotisation</span><span class="val">${fmtM(x.c)}</span></div>
       <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cyc.</span></div>
