@@ -28,6 +28,14 @@ export const DEFAUTS = {
   r_sfd_annuel: 0.18,
   // enchère
   prime_operateur_taux: 0.015, rho_mensuel: 0.02, bid_bruit_sigma: 0.25, bid_plafond_frac_pot: 0.12,
+  // MODÈLE À DEUX POPULATIONS : les premiers tours (N/2 + x) sont aux enchères (EMPRUNTEURS),
+  // les suivants sont des ÉPARGNANTS servis dans l'ordre aléatoire, depuis le dépôt, rémunérés.
+  deux_populations: true,
+  x_tours_emprunteurs: 0,        // décalage par rapport à N/2 (0 = moitié/moitié)
+  part_emprunteurs_declares: 0.55, // part de membres qui DÉCLARENT vouloir emprunter (accès précoce)
+  // rémunération des épargnants (puisée dans le surplus de bids + intérêts sur dépôts)
+  part_bids_aux_epargnants: 0.40, // part des surplus de bids reversée aux épargnants
+  r_depot_annuel: 0.05,          // intérêt que la SFD verse sur les dépôts (rémunère l'épargne)
   // préférences
   part_urgent: 0.20, part_modere: 0.50, part_epargnant: 0.30,
   urg_urgent: 1.60, urg_modere: 1.00, urg_epargnant: 0.55,
@@ -38,7 +46,7 @@ export const DEFAUTS = {
   mitigation_active: true, acces_sequence_active: true, t_restreint: 3, part_avec_historique: 0.50,
   garantie_enchere_active: true, g_cotisations: 1,
   prime_active: true, fge_actif: true,
-  tranche_sfd_active: true, plafond_tranche_sfd_frac: 0.05,
+  tranche_sfd_active: true, plafond_tranche_sfd_frac: 0.15,
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
   secteurs: [["commerce", 0.30, 0.30], ["agriculture", 0.20, 0.45], ["transport", 0.15, 0.25], ["services", 0.20, 0.15], ["artisanat", 0.15, 0.20]],
@@ -99,16 +107,28 @@ export function simulerRun(p, graine) {
   const etatZ = {}; const zMois = []; for (let t = 0; t < totalTours; t++) zMois.push(tirerZ(rng, p, etatZ));
 
   function pref() { const r = rng(); if (r < p.part_urgent) return ["urgent", p.urg_urgent]; if (r < p.part_urgent + p.part_modere) return ["modere", p.urg_modere]; return ["epargnant", p.urg_epargnant]; }
+  // seuil emprunteurs / épargnants : N/2 + x
+  const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
+  const rDepotMensuel = (p.r_depot_annuel || 0) / 12;
   const pools = []; const comptes = [];
   for (let pid = 0; pid < nPools; pid++) {
-    const membres = poolsIdx[pid].map((gi, i) => { const pr = profils[gi]; let [tp, urg] = pref(); if (p.comportemental_actif && (tp === "modere" || tp === "epargnant") && rng() < p.bascule_urgents) { tp = "urgent"; urg = p.urg_urgent; } return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist: rng() < p.part_avec_historique, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0 }; });
-    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0 });
+    const membres = poolsIdx[pid].map((gi, i) => {
+      const pr = profils[gi]; let [tp, urg] = pref();
+      if (p.comportemental_actif && (tp === "modere" || tp === "epargnant") && rng() < p.bascule_urgents) { tp = "urgent"; urg = p.urg_urgent; }
+      const aHist = rng() < p.part_avec_historique;
+      // profil déclaré : veut emprunter (accès précoce) OU épargner. + filtre de fiabilité (aHist).
+      const declareEmp = rng() < p.part_emprunteurs_declares;
+      const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true; // accès phase emprunteurs
+      return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
+    });
+    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0 });
   }
 
   let fge = 0, trancheSfdUtilisee = 0, fgeProvisions = 0, fgeSaisies = 0;
   let primes = 0, surplusEnchere = 0, interetsSfd = 0, avanceCumulee = 0;
   let couvertFge = 0, couvertSfd = 0, residuel = 0, perteSfd = 0, nFuites = 0, nGratuits = 0;
   let coutTour1 = 0, continuiteOk = true;
+  let remunEpargnants = 0, interetsDepots = 0;
   const exposMois = new Array(totalTours).fill(0);
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
 
@@ -135,48 +155,94 @@ export function simulerRun(p, graine) {
           }
         }
       }
-      // 2. collecte
+      // 2. collecte des cotisations -> alimente le dépôt commun
       const actifs = membres.filter(mb => !mb.aFui);
       let potColl = 0;
-      for (const mb of actifs) if (!mb.aEncaisse) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); potColl += (rng() < taux ? p.c * 0.9 : p.c); mb.cotise += p.c; }
-      // 3. attribution
-      const elig = actifs.filter(mb => !mb.aEncaisse);
-      let eligBid = elig;
-      if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = elig.filter(mb => mb.aHist);
+      for (const mb of actifs) if (!mb.aEncaisse) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
+      // intérêts sur le dépôt (la SFD rémunère l'épargne déposée)
+      if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
+
       const dureePret = Math.max(1, m - (slot + 1));
+      const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
+
+      // 3. attribution + 4. décaissement
       let gagnant = null, bideur = false, bidSurplusWtp = 0;
-      if (p.mode === "garantie") {
-        let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
-        if (best && bestW > 0.01 * pot) { gagnant = best; bideur = true; bidSurplusWtp = bestW; if (p.mitigation_active && p.garantie_enchere_active && slot < p.t_restreint && gagnant.consign === 0) gagnant.consign = p.g_cotisations * p.c; }
-        else if (elig.length) { gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]); bideur = false; }
-      } else { if (elig.length) { gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]); bideur = false; } }
-      // 4. décaissement
-      if (gagnant) {
-        const avance = Math.max(0, pot - gagnant.cotise);
-        let bid = 0, net = pot;
+      if (phaseEmprunteur) {
+        // --- PHASE EMPRUNTEURS : enchère, avance SFD, crédit-relais, prime + risque de fuite ---
+        const elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
+        let eligBid = elig;
+        if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = elig.filter(mb => mb.aHist);
         if (p.mode === "garantie") {
-          const primeGar = p.prime_active ? primeGarantie(avance, dureePret, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
-          const interets = pot * rSfd * dureePret, margeOp = p.prime_operateur_taux * pot;
-          const coutObl = interets + primeGar + margeOp;
-          // fidèle au Python : la wtp est d'abord plafonnée, PUIS on retire le coût obligatoire
-          const bidSurplusPlaf = Math.min(bidSurplusWtp, p.bid_plafond_frac_pot * pot);
-          let surplus = bideur ? Math.max(0, Math.min(bidSurplusPlaf - coutObl, p.bid_plafond_frac_pot * pot)) : 0;
-          bid = coutObl + surplus; net = Math.max(0, pot - bid);
-          interetsSfd += interets; primes += margeOp; surplusEnchere += surplus; fgeProvisions += primeGar; fge += primeGar; avanceCumulee += net;
-        } else { bid = 0; net = pot; avanceCumulee += pot; }
-        cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
-        gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
-        if (!bideur) nGratuits++;
-        if (t === 1 && coutTour1 === 0) coutTour1 = bid;
+          let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
+          if (best && bestW > 0.01 * pot) { gagnant = best; bideur = true; bidSurplusWtp = bestW; if (p.mitigation_active && p.garantie_enchere_active && slot < p.t_restreint && gagnant.consign === 0) gagnant.consign = p.g_cotisations * p.c; }
+          else if (elig.length) { gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]); }
+        } else if (elig.length) gagnant = elig.reduce((b, mb) => mb.i < b.i ? mb : b, elig[0]);
+        if (gagnant) {
+          const avance = Math.max(0, pot - gagnant.cotise);
+          let bid = 0, net = pot;
+          if (p.mode === "garantie") {
+            const primeGar = p.prime_active ? primeGarantie(avance, dureePret, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
+            const interets = pot * rSfd * dureePret, margeOp = p.prime_operateur_taux * pot;
+            const coutObl = interets + primeGar + margeOp;
+            const bidSurplusPlaf = Math.min(bidSurplusWtp, p.bid_plafond_frac_pot * pot);
+            let surplus = bideur ? Math.max(0, Math.min(bidSurplusPlaf - coutObl, p.bid_plafond_frac_pot * pot)) : 0;
+            bid = coutObl + surplus; net = Math.max(0, pot - bid);
+            interetsSfd += interets; primes += margeOp; fgeProvisions += primeGar; fge += primeGar; avanceCumulee += net;
+            // le surplus de bid : une part aux épargnants (rémunération), le reste à l'Opérateur
+            const partEp = (p.deux_populations ? p.part_bids_aux_epargnants : 0) * surplus;
+            surplusEnchere += (surplus - partEp);
+            cpt.depot += partEp; remunEpargnants += partEp;  // alimente la rémunération épargnants
+          } else { bid = 0; net = pot; avanceCumulee += pot; }
+          cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true }); cpt.decaisseCumule += net;
+          gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
+          if (!bideur) nGratuits++;
+          if (t === 1 && coutTour1 === 0) coutTour1 = bid;
+        }
+      } else {
+        // --- PHASE ÉPARGNANTS : servis DU PLUS SÛR AU MOINS SÛR (le moins fiable attend la fin,
+        // quand il a déjà tout épargné → plus rien à fuir). Rémunération égale pour tous. ---
+        const eparg = actifs.filter(mb => !mb.aEncaisse);
+        if (eparg.length) {
+          if (p.deux_populations) {
+            // score de fiabilité : historique d'abord, puis risque de fuite croissant (rho/seuil).
+            // on sert le PLUS sûr ; le moins sûr est repoussé vers la fin.
+            eparg.sort((a, b) => {
+              if (a.aHist !== b.aHist) return a.aHist ? -1 : 1;   // historiques d'abord
+              return a.seuil - b.seuil;   // seuil bas = PD basse = plus fiable, servi avant
+            });
+            gagnant = eparg[0];
+          } else {
+            gagnant = eparg[Math.floor(rng() * eparg.length)];
+          }
+          gagnant.estEpargnant = true; gagnant.aEncaisse = true; gagnant.tEnc = t;
+          // servi depuis le dépôt ; si insuffisant, le complément passe par la CASCADE de
+          // couverture (FGE -> tranche SFD), comme tout trou. La promesse tient tant que la
+          // cascade tient.
+          const pris = Math.min(cpt.depot, pot); cpt.depot -= pris;
+          let complement = pot - pris;
+          if (complement > 1e-9) {
+            const pf = p.fge_actif ? Math.min(fge, complement) : 0; fge -= pf; complement -= pf; couvertFge += pf;
+            if (complement > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(cpt.decaisseCumule, 1) * nPools; const dispo = Math.max(0, plaf - trancheSfdUtilisee); const ps = Math.min(dispo, complement); trancheSfdUtilisee += ps; complement -= ps; couvertSfd += ps; perteSfd += ps; }
+            if (complement > 1e-9) { residuel += complement; continuiteOk = false; }
+          }
+          gagnant.recu += pot;
+        }
       }
-      // 5. récupération
-      for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; }
+      // 5. récupération des prêts (rembourse le dépôt)
+      for (const pr of cpt.prets) if (pr.actif && pr.restant > 1e-9) { const pa = Math.min(pr.mensualite, pr.restant); pr.restant -= pa; cpt.depot += pa; }
       exposMois[t - 1] += cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     }
   }
 
   const nMembres = nPools * m, mois = totalTours;
-  // P&L Opérateur
+  // rémunération des épargnants = part des bids reversée + intérêts sur dépôts, répartie
+  // ÉGALEMENT entre les épargnants servis. (déjà dans le dépôt via remunEpargnants/interetsDepots
+  // pour la trésorerie ; ici on calcule le rendement distribué par tête)
+  const totalRemun = remunEpargnants + interetsDepots;
+  const nEpargnants = pools.flat().filter(mb => mb.estEpargnant).length;
+  const remunParEpargnant = nEpargnants ? totalRemun / nEpargnants : 0;
+
+  // P&L Opérateur (brut)
   const revenus = primes + surplusEnchere;
   const coutAcq = p.cout_acquisition_membre * nMembres, coutOps = p.cout_ops_pool_mois * nPools * mois;
   const coutsFixes = p.couts_fixes_mensuels * mois;
@@ -187,8 +253,9 @@ export function simulerRun(p, graine) {
   return {
     nPools, nFuites, continuiteOk, residuel, perteSfd, coutTour1, nGratuits,
     couvertFge, couvertSfd, fgeProvisions, fgeSaisies, primes, surplusEnchere, interetsSfd, avanceCumulee,
+    remunEpargnants: totalRemun, remunParEpargnant, nEpargnants, interetsDepots,
     expoMois: exposMois, expoMax: Math.max(...exposMois),
-    pnlOp, margePool, breakEven, revenus, coutAcq, coutOps,
+    pnlOp, margePool, breakEven, revenus, coutAcq, coutOps, seuilEmp,
   };
 }
 
@@ -282,7 +349,8 @@ export function simulerPoolDetail(p, graine) {
 // ---- Monte Carlo ----
 export function monteCarlo(p, nRuns, graineBase) {
   const acc = { pnlOp: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [],
-                interetsSfd: [], primes: [], surplusEnchere: [], fgeProvisions: [], fgeSaisies: [], couvertFge: [], couvertSfd: [], avanceCumulee: [] };
+                interetsSfd: [], primes: [], surplusEnchere: [], fgeProvisions: [], fgeSaisies: [], couvertFge: [], couvertSfd: [], avanceCumulee: [],
+                remunEpargnants: [], remunParEpargnant: [], nEpargnants: [], interetsDepots: [] };
   let expoProfil = null;
   for (let i = 0; i < nRuns; i++) {
     const r = simulerRun(p, graineBase + i);
@@ -292,6 +360,7 @@ export function monteCarlo(p, nRuns, graineBase) {
     acc.interetsSfd.push(r.interetsSfd); acc.primes.push(r.primes); acc.surplusEnchere.push(r.surplusEnchere);
     acc.fgeProvisions.push(r.fgeProvisions); acc.fgeSaisies.push(r.fgeSaisies);
     acc.couvertFge.push(r.couvertFge); acc.couvertSfd.push(r.couvertSfd); acc.avanceCumulee.push(r.avanceCumulee);
+    acc.remunEpargnants.push(r.remunEpargnants); acc.remunParEpargnant.push(r.remunParEpargnant); acc.nEpargnants.push(r.nEpargnants); acc.interetsDepots.push(r.interetsDepots);
     if (!expoProfil) expoProfil = r.expoMois.map(() => 0);
     r.expoMois.forEach((v, j) => expoProfil[j] += v / nRuns);
   }
