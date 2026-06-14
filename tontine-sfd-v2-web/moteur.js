@@ -224,13 +224,14 @@ export function simulerRun(p, graine) {
           }
         }
       }
+      // intérêts sur le dépôt : portent sur le solde DÉJÀ là (mois précédent), AVANT la cotisation
+      // du tour — on ne rémunère pas l'argent qui vient d'entrer (pas d'intérêt au tour 1).
+      if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
       // 2. collecte des cotisations -> alimente le dépôt commun.
       // TOUT LE MONDE cotise c chaque mois (encaisseurs compris) ; seuls les fuyards non remplacés manquent.
       const actifs = membres.filter(mb => !mb.aFui);
       let potColl = 0;
       for (const mb of actifs) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
-      // intérêts sur le dépôt (la SFD rémunère l'épargne déposée)
-      if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
 
       const dureePret = Math.max(1, m - (slot + 1));
       const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
@@ -462,13 +463,15 @@ export function journalPool(p, graine) {
       }
     }
 
+    // intérêts sur le dépôt : sur le solde DÉJÀ là (mois précédent), AVANT la cotisation du tour.
+    // On ne rémunère pas l'argent qui vient d'entrer -> aucun intérêt au tour 1.
+    if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; flux(mvt, 'SFD', 'rémunération', `intérêts sur le dépôt du mois précédent (rémunération de l'épargne)`, it); }
     // 2. cotisations → dépôt commun. TOUT LE MONDE cotise c (encaisseurs compris) ; un fuyard non
     // remplacé manque (le compteur tombe à 9, puis remonte à 10 dès qu'il est remplacé).
     const actifs = membres.filter(mb => !mb.aFui);
     let potColl = 0, nCot = 0;
     for (const mb of actifs) { cpt.depot += p.c; potColl += p.c; mb.cotise += p.c; nCot++; }
     flux(mvt, 'Membres', 'cotisation', `${nCot} membres présents versent leur cotisation au dépôt`, nCot * p.c);
-    if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; flux(mvt, 'SFD', 'rémunération', `intérêts versés sur le dépôt (rémunération de l'épargne)`, it); }
 
     const dureePret = Math.max(1, m - (slot + 1));
     const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
