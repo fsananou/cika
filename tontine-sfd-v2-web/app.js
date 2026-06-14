@@ -320,7 +320,7 @@ $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux();
 // Les autres leviers — dont la cotisation c — sont balayés en bandes min–max.
 const BANDES = [
   { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,    max: 20,     pas: 1,     lo: 6,     hi: 12,     fmt: 'int' },
-  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 5000, max: 100000, pas: 5000,  lo: 5000,  hi: 100000, fmt: 'k' },
+  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 1000, max: 100000, pas: 1000,  lo: 1000,  hi: 100000, fmt: 'k' },
   { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,    max: 4,      pas: 1,     lo: 1,     hi: 2,      fmt: 'int' },
   { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2,  max: 1,      pas: 0.05,  lo: 0.55,  hi: 0.85,   fmt: 'pct' },
   { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
@@ -371,7 +371,7 @@ function renderCadrageCtrls() {
 }
 $('btnCadrageReset').addEventListener('click', () => {
   CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
-  const def = { Ms: [6, 12], cs: [5000, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
+  const def = { Ms: [6, 12], cs: [1000, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
   BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
 });
 
