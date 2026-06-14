@@ -5,6 +5,8 @@ const unitaire = () => PARAMS && PARAMS.c === 1;
 const fmtUnite = x => { const a = Math.abs(x); const s = a >= 100 ? Math.round(x).toLocaleString('fr-FR') : a >= 10 ? x.toFixed(1) : x.toFixed(2); return s + '×c'; };
 const fmt = x => unitaire() ? fmtUnite(x) : Math.round(x).toLocaleString('fr-FR');
 const fmtM = x => unitaire() ? fmtUnite(x) : (Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k');
+// page Flux : montants détaillés à 2 décimales (×c en mode unitaire, sinon valeur complète XOF)
+const fmtFlux = x => unitaire() ? x.toFixed(2) + '×c' : x.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = x => (x * 100).toFixed(x * 100 < 1 && x > 0 ? 1 : 0) + '%';
 const $ = id => document.getElementById(id);
 
@@ -284,7 +286,7 @@ function renderFlux() {
 
   const j = journalPool({ ...PARAMS }, fluxGraine);
   const nFuites = j.tours.reduce((s, tr) => s + tr.mvt.filter(m => m.type === 'fuite').length, 0);
-  $('fluxResume').textContent = `Pool de ${j.m} membres · ${j.cycles} cycle${j.cycles > 1 ? 's' : ''} (${j.totalTours} tours) · pot = ${fmtM(j.pot)} · ${nFuites} fuite${nFuites !== 1 ? 's' : ''}, ${j.nRempl} remplacement${j.nRempl !== 1 ? 's' : ''}. Les flux suivent la mécanique exacte du moteur ; la fuite est tirée au hasard selon les paramètres.`;
+  $('fluxResume').textContent = `Pool de ${j.m} membres · ${j.cycles} cycle${j.cycles > 1 ? 's' : ''} (${j.totalTours} tours) · pot = ${fmtFlux(j.pot)} · ${nFuites} fuite${nFuites !== 1 ? 's' : ''}, ${j.nRempl} remplacement${j.nRempl !== 1 ? 's' : ''}. Les flux suivent la mécanique exacte du moteur ; la fuite est tirée au hasard selon les paramètres.`;
 
   let html = '', cycleVu = 0;
   for (const tr of j.tours) {
@@ -293,12 +295,12 @@ function renderFlux() {
     const lignes = tr.mvt.map(m => {
       const cls = ACTEUR_CLS[m.acteur] || 'a-mb';
       const signe = m.montant === 0 ? '' : (TYPE_SIGNE[m.type] === 'neg' || m.montant < 0 ? 'neg' : 'pos');
-      const montant = m.montant === 0 ? '' : `<span class="flux-montant ${signe}">${m.montant > 0 ? '+' : ''}${fmtM(m.montant)}</span>`;
+      const montant = m.montant === 0 ? '' : `<span class="flux-montant ${signe}">${m.montant > 0 ? '+' : ''}${fmtFlux(m.montant)}</span>`;
       return `<div class="flux-ligne"><span class="flux-acteur ${cls}">${m.acteur}</span><span class="flux-lib">${m.libelle}</span>${montant}</div>`;
     }).join('');
     html += `<div class="flux-tour${aFuite ? ' a-fuite' : ''}">
       <div class="flux-tour-hd"><span class="flux-t">Tour ${tr.tour}</span><span class="flux-phase ${tr.phase === 'emprunteur' ? 'ph-emp' : 'ph-ep'}">${tr.phase}</span>
-        <span class="flux-soldes">dépôt ${fmtM(tr.depot)} · FGE ${fmtM(tr.fge)} · encours SFD ${fmtM(tr.expo)}</span></div>
+        <span class="flux-soldes">dépôt ${fmtFlux(tr.depot)} · FGE ${fmtFlux(tr.fge)} · encours SFD ${fmtFlux(tr.expo)}</span></div>
       ${lignes}</div>`;
   }
   $('fluxJournal').innerHTML = html;
