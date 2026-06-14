@@ -42,6 +42,8 @@ export const DEFAUTS = {
   // fuite
   p_fuite_base: 0.06, fuite_mult_tour_precoce: 1.8, charge_z_fuite: 0.35,
   taux_echec_friction: 0.03, prelevement_auto_efficacite: 0.7,
+  // arrêt d'un membre NON encaisseur (cas 2) : remboursé + remplaçant rattrape. Off par défaut.
+  taux_arret_non_encaisseur: 0,
   // couverture (3 étages)
   mitigation_active: true, acces_sequence_active: true, t_restreint: 3, part_avec_historique: 0.50,
   garantie_enchere_active: true, g_cotisations: 1,
@@ -175,22 +177,23 @@ export function simulerRun(p, graine) {
 
     for (let pid = 0; pid < nPools; pid++) {
       const membres = pools[pid], cpt = comptes[pid];
-      // 1. fuites
+      // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
+      // Le remplaçant arrive « propre » (n'hérite PAS de la dette), entre comme ÉPARGNANT
+      // (cotisé + bonus, pas de droit d'enchère ce cycle). Le trou est porté par la cascade.
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui) {
           const moisR = Math.max(1, vie - mb.tEnc);
           const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.33) : 1);
           const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
-            mb.aFui = true; nFuites++;
+            nFuites++;
             let trou = 0;
             for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
             if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
-            // REMPLACEMENT : un remplaçant reprend le sous-compte et RATTRAPE les cotisations des
-            // tours déjà passés (versées au dépôt -> réduit le trou), puis cotisera les tours à venir.
-            const rattrapage = slot * p.c;            // tours 1..t-1 du cycle courant
-            cpt.depot += rattrapage; trou = Math.max(0, trou - rattrapage);
-            mb.remplace = true; mb.filtreScore = false;   // nouveau profil : ne bénéficie pas du filtre
+            // remplaçant-épargnant : reprend le sous-compte « propre » (n'hérite pas de la dette),
+            // profil ÉPARGNANT sans droit d'enchère ce cycle ; il cotise et sera servi (cotisé + bonus).
+            mb.aEncaisse = false; mb.tEnc = null; mb.aFui = false; mb.cotise = 0;
+            mb.remplaceEnc = true; mb.candidatEmp = false; mb.filtreScore = false;
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(getFge(pid), reste) : 0; addFge(pid, -pf2); reste -= pf2; couvertFge += pf2;
             if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, reste); addTranche(pid, ps); reste -= ps; couvertSfd += ps; perteSfd += ps; }
@@ -198,12 +201,26 @@ export function simulerRun(p, graine) {
           }
         }
       }
+      // 1b. CAS 2 — arrêt d'un membre N'AYANT PAS ENCORE ENCAISSÉ (paramétrable, off par défaut).
+      // Le partant est remboursé de ses cotisations (sortie dépôt) ; un remplaçant rattrape les
+      // tours déjà passés (entrée dépôt) et reprend le sous-compte avec son droit d'enchère.
+      if ((p.taux_arret_non_encaisseur || 0) > 0) {
+        for (const mb of membres) {
+          if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc) {
+            if (rng() < p.taux_arret_non_encaisseur) {
+              const rembourse = mb.cotise;                 // ce qu'il avait déjà versé
+              cpt.depot = Math.max(0, cpt.depot - rembourse);
+              const rattrapage = slot * p.c;               // tours 1..t-1 que le remplaçant rattrape
+              cpt.depot += rattrapage;
+              mb.cotise = rattrapage; mb.remplaceNonEnc = true;
+            }
+          }
+        }
+      }
       // 2. collecte des cotisations -> alimente le dépôt commun
       const actifs = membres.filter(mb => !mb.aFui);
       let potColl = 0;
       for (const mb of actifs) if (!mb.aEncaisse) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
-      // les sous-comptes repris par un remplaçant cotisent aussi les tours à venir
-      for (const mb of membres) if (mb.remplace) { potColl += p.c; cpt.depot += p.c; }
       // intérêts sur le dépôt (la SFD rémunère l'épargne déposée)
       if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
 
@@ -387,23 +404,20 @@ export function journalPool(p, graine) {
     if (slot === 0) for (const mb of membres) if (!mb.aFui) mb.aEncaisse = false;
     const mvt = [];
 
-    // 1. fuites (membres ayant encaissé) + cascade de couverture + remplacement
+    // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
+    // Le remplaçant entre comme ÉPARGNANT (cotisé + bonus, pas de droit d'enchère ce cycle),
+    // n'hérite PAS de la dette ; le trou reste porté par la cascade.
     for (const mb of membres) {
       if (mb.aEncaisse && !mb.aFui) {
         const moisR = Math.max(1, vie - mb.tEnc);
-        const pf = probaFuite(p.p_fuite_base, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
+        const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.33) : 1);
+        const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
         if (rng() < pf) {
-          mb.aFui = true;
           let trou = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
           flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaissé T${mb.tEnc}) disparaît — avance non remboursée`, -trou);
           if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
-          // remplacement : le remplaçant RATTRAPE les cotisations des tours déjà passés (-> dépôt, réduit le trou)
           const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-          mb.remplacant = nom;
-          const rattrapage = slot * p.c;
-          if (rattrapage > 0) { cpt.depot += rattrapage; flux(mvt, nom, 'rattrapage', `${nom} remplace ${mb.nom} et rattrape les ${slot} cotisation${slot > 1 ? 's' : ''} des tours passés`, rattrapage); }
-          else flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} (aucun tour passé à rattraper)`, 0);
-          trou = Math.max(0, trou - rattrapage);
+          flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} en ÉPARGNANT (cotisé + bonus, pas d'enchère ce cycle)`, 0);
           if (p.mode === 'garantie') {
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; if (pf2 > 0) { fge -= pf2; reste -= pf2; flux(mvt, 'FGE', 'couverture', `FGE absorbe le trou (première perte)`, -pf2); }
@@ -412,6 +426,22 @@ export function journalPool(p, graine) {
           } else {
             flux(mvt, 'Groupe', 'résiduel', `tontine nue : le groupe subit la perte`, -trou);
           }
+          // le sous-compte repris devient un épargnant actif (n'a pas encaissé pour lui-même)
+          mb.aEncaisse = false; mb.tEnc = null; mb.cotise = 0; mb.candidatEmp = false; mb.nom = nom;
+        }
+      }
+    }
+    // 1b. CAS 2 — arrêt d'un NON-encaisseur (paramétrable, off par défaut) : remboursé + remplaçant rattrape.
+    if ((p.taux_arret_non_encaisseur || 0) > 0) {
+      for (const mb of membres) {
+        if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc && rng() < p.taux_arret_non_encaisseur) {
+          const rembourse = mb.cotise; cpt.depot = Math.max(0, cpt.depot - rembourse);
+          flux(mvt, mb.nom, 'remboursement', `${mb.nom} arrête avant d'encaisser — remboursé de ses cotisations`, -rembourse);
+          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
+          const rattrapage = slot * p.c; cpt.depot += rattrapage;
+          if (rattrapage > 0) flux(mvt, nom, 'rattrapage', `${nom} reprend la place et rattrape ${slot} cotisation${slot > 1 ? 's' : ''} des tours passés`, rattrapage);
+          else flux(mvt, nom, 'remplacement', `${nom} reprend la place (aucun tour passé à rattraper)`, 0);
+          mb.cotise = rattrapage; mb.remplaceNonEnc = true; mb.nom = nom;
         }
       }
     }
@@ -420,8 +450,6 @@ export function journalPool(p, graine) {
     const actifs = membres.filter(mb => !mb.aFui);
     let potColl = 0, nCot = 0;
     for (const mb of actifs) if (!mb.aEncaisse) { cpt.depot += p.c; potColl += p.c; mb.cotise += p.c; nCot++; }
-    // les fuyards remplacés cotisent aussi (le remplaçant paie)
-    for (const mb of membres) if (mb.aFui && mb.remplacant && !mb.aEncaisse) { cpt.depot += p.c; potColl += p.c; nCot++; }
     flux(mvt, 'Membres', 'cotisation', `${nCot} cotisations versées au dépôt commun`, nCot * p.c);
     if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; flux(mvt, 'SFD', 'rémunération', `intérêts versés sur le dépôt (rémunération de l'épargne)`, it); }
 
@@ -433,9 +461,9 @@ export function journalPool(p, graine) {
     if (phaseEmprunteur) {
       let elig = actifs.filter(mb => !mb.aEncaisse && (!p.deux_populations || mb.candidatEmp));
       const cycle1 = t <= m;
-      if (cycle1 && p.cycle1_scoring_actif) { const sMin = seuilScorePool(slot); elig = elig.filter(mb => mb.score >= sMin); }
-      const enchereOuverte = !(cycle1 && p.cycle1_scoring_actif) || (potColl >= p.alpha_declenchement * m * p.c);
-      let eligBid = enchereOuverte ? elig : [];
+      const filtreActif = cycle1 && p.cycle1_scoring_actif;
+      if (filtreActif) { const sMin = seuilScorePool(slot); elig = elig.filter(mb => mb.score >= sMin); }
+      let eligBid = elig;  // l'enchère se déclenche toujours
       if (p.mode === 'garantie' && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
       let gagnant = null, bideur = false, bidW = 0;
       if (p.mode === 'garantie') {
@@ -468,8 +496,9 @@ export function journalPool(p, graine) {
           flux(mvt, 'SFD', 'avance', `la SFD avance le pot à ${gagnant.nom}`, net);
         }
         gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
+        if (filtreActif) gagnant.filtreScore = true;
       } else {
-        flux(mvt, '—', 'gel', `aucune attribution ce tour (enchère non déclenchée / pas d'éligible)`, 0);
+        flux(mvt, '—', 'gel', `aucune attribution ce tour (pas d'éligible)`, 0);
       }
     } else {
       // PHASE ÉPARGNANTS : servis du plus sûr au moins sûr, payés depuis le dépôt (complément via cascade)

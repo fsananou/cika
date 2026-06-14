@@ -55,6 +55,7 @@ const SCHEMA = [
     { k: 'fuite_mult_tour_precoce', nom: 'Tentation tour précoce', d: "Multiplicateur de fuite au tour 1 (prendre tôt = plus tentant de fuir).", t: 'range', min: 1, max: 3, step: 0.2, fmt: 'x' },
     { k: 'charge_z_fuite', nom: 'Sensibilité macro', d: "À quel point un choc économique augmente les fuites (corrélation).", t: 'range', min: 0, max: 0.8, step: 0.05 },
     { k: 'taux_echec_friction', nom: 'Échec de prélèvement', d: "% de cotisations qui échouent temporairement (récupérable).", t: 'range', min: 0, max: 0.15, step: 0.01, fmt: 'pct' },
+    { k: 'taux_arret_non_encaisseur', nom: 'Arrêt avant encaissement', d: "% de membres n'ayant pas encore encaissé qui arrêtent (cas 2) : ils sont remboursés, un remplaçant rattrape les tours passés. 0 = désactivé.", t: 'range', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
   ]},
   { grp: 'Couverture (3 étages)', desc: "Comment le trou d'une fuite est absorbé.", items: [
     { k: 'mitigation_active', nom: 'Mitigations', d: "Activer accès séquencé + garantie d'enchère + prélèvement auto.", t: 'bool' },
@@ -277,7 +278,7 @@ function drawFiltreDemo(p) {
 // ---- page FLUX : déroulé d'un pool, tour par tour ----
 let fluxGraine = 101;
 const ACTEUR_CLS = { SFD: 'a-sfd', FGE: 'a-fge', Opérateur: 'a-op', Dépôt: 'a-depot', Épargnants: 'a-ep', Membres: 'a-mb', Groupe: 'a-mb' };
-const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos', rattrapage: 'pos', remplacement: 'pos' };
+const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', remboursement: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos', rattrapage: 'pos', remplacement: 'pos' };
 
 function renderFlux() {
   // démo : effet du filtre de score sur les pertes du cycle 1 (avec vs sans)
