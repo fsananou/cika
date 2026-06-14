@@ -9,126 +9,74 @@
 <body>
 <header class="hero">
   <div class="wrap">
-    <div class="kicker">Simulateur · comprendre le mécanisme en 1 minute</div>
+    <div class="kicker">Simulateur · tontine rotative sécurisée</div>
     <h1 class="num">La tontine, mais votre tour est sécurisé</h1>
-    <p class="sub">Regardez un cercle de 10 personnes fonctionner, tour par tour. Voyez ce qui se passe quand quelqu'un disparaît — et comment chacun reçoit quand même son dû.</p>
+    <p class="sub">Tous les paramètres du modèle, et les chiffres qui en découlent — calculés en direct (Monte Carlo). La promesse tient-elle, combien l'Opérateur gagne, quel risque la SFD porte.</p>
   </div>
 </header>
 
 <nav class="niveaux wrap">
-  <button class="niv-btn active" data-niv="public">👁️ Comprendre le mécanisme</button>
-  <button class="niv-btn" data-niv="investisseur">📊 Les chiffres</button>
-  <button class="niv-btn" data-niv="parametres">🎛️ Tous les paramètres</button>
+  <button class="niv-btn active" data-niv="simulation">🎛️ Simulation</button>
   <button class="niv-btn" data-niv="doc">📖 Documentation</button>
 </nav>
 
-<!-- ============ NIVEAU GRAND PUBLIC ============ -->
-<main id="vue-public">
+<!-- ============ SIMULATION (paramètres + chiffres) ============ -->
+<main id="vue-simulation">
   <section class="wrap">
-    <div class="mode-toggle">
-      <span>Type de tontine :</span>
-      <div class="seg" id="modeSeg">
-        <button class="seg-btn" data-mode="nue">Tontine simple</button>
-        <button class="seg-btn active" data-mode="garantie">Tontine sécurisée</button>
-      </div>
-      <span class="mode-hint" id="modeHint"></span>
-    </div>
-
-    <div class="anim-card card">
-      <div class="anim-header">
-        <div class="anim-titre">Cercle de 10 · cotisation 100 000 / mois</div>
-        <div class="promesse-badge" id="promesseBadge">✓ tous servis</div>
-      </div>
-
-      <!-- les 10 membres en cercle -->
-      <div class="cercle" id="cercle"></div>
-
-      <!-- le pot du tour -->
-      <div class="pot-zone">
-        <div class="pot-info">
-          <div class="pot-label">Mois <span id="moisNum">1</span> — le pot va à</div>
-          <div class="pot-benef" id="potBenef">—</div>
-        </div>
-        <div class="pot-montant num" id="potMontant">900 000</div>
-        <div class="pot-detail" id="potDetail"></div>
-      </div>
-
-      <!-- ce qui se passe ce tour -->
-      <div class="evenement" id="evenement"></div>
-
-      <div class="anim-controls">
-        <button id="btnPrev" class="btn ghost">‹</button>
-        <button id="btnPlay" class="btn">▶ Dérouler</button>
-        <button id="btnNext" class="btn ghost">›</button>
-        <button id="btnReset" class="btn ghost">↺</button>
-        <span class="anim-step" id="animStep"></span>
-      </div>
-    </div>
-
-    <div class="legende">
-      <span><i class="dot pat"></i> attend son tour (épargne, gratuit)</span>
-      <span><i class="dot urg"></i> a payé pour passer tôt</span>
-      <span><i class="dot enc"></i> a déjà reçu</span>
-      <span><i class="dot fui"></i> a disparu</span>
-    </div>
-
-    <div class="explications" id="explications"></div>
-  </section>
-</main>
-
-<!-- ============ NIVEAU INVESTISSEUR ============ -->
-<main id="vue-investisseur" hidden>
-  <section class="wrap">
-    <h2>Les chiffres du modèle</h2>
-    <p class="lead">Tout est calculé en direct dans votre navigateur (Monte Carlo). Deux questions : <b>combien l'opérateur gagne</b>, et <b>la promesse tient-elle</b> dans tous les scénarios.</p>
-
     <div class="sim-grid">
-      <div class="controls card">
-        <h3>Scénario</h3>
-        <div class="seg vertical" id="scenSeg">
-          <button class="seg-btn active" data-scen="nominal">Nominal</button>
-          <button class="seg-btn" data-scen="comportemental">Stress comportemental</button>
-          <button class="seg-btn" data-scen="macro">Stress macro</button>
-          <button class="seg-btn" data-scen="combine">Combiné</button>
-          <button class="seg-btn" data-scen="bids_faibles">Peu d'enchères</button>
+      <!-- COLONNE GAUCHE : tous les paramètres -->
+      <div class="controls">
+        <div class="card preset-card">
+          <h3>Scénario rapide</h3>
+          <div class="seg vertical" id="presetSeg">
+            <button class="seg-btn active" data-preset="nominal">Nominal</button>
+            <button class="seg-btn" data-preset="comportemental">Stress comportemental</button>
+            <button class="seg-btn" data-preset="macro">Stress macro</button>
+            <button class="seg-btn" data-preset="combine">Combiné</button>
+            <button class="seg-btn" data-preset="bids_faibles">Peu d'enchères</button>
+          </div>
+          <label class="runs-label">Précision (runs) : <output id="o_runs"></output><input type="range" id="c_runs" min="40" max="300" step="40"></label>
+          <div class="run-actions">
+            <button id="btnRun" class="btn big">▶ Lancer</button>
+            <button id="btnReset" class="btn ghost">↺ Défaut</button>
+          </div>
+          <span class="param-status" id="simStatus"></span>
         </div>
-        <span class="hint" id="scenHint"></span>
-        <hr>
-        <h3>Paramètres</h3>
-        <label>Pools : <output id="o_np"></output><input type="range" id="c_np" min="10" max="100" step="10"></label>
-        <label>Membres/pool : <output id="o_m"></output><input type="range" id="c_m" min="6" max="15" step="1"></label>
-        <label>Cotisation : <output id="o_c"></output><input type="range" id="c_c" min="25000" max="200000" step="25000"></label>
-        <label>Taux de fuite (% bénéficiaires) : <output id="o_pf"></output><input type="range" id="c_pf" min="0.02" max="0.30" step="0.02"></label>
-        <label>Prime (prudence) : <output id="o_pp"></output><input type="range" id="c_pp" min="0.8" max="2.5" step="0.1"></label>
-        <label>Runs : <output id="o_runs"></output><input type="range" id="c_runs" min="40" max="300" step="40"></label>
-        <button id="btnRun" class="btn big">▶ Lancer</button>
+        <div id="paramGroupes"></div>
       </div>
+
+      <!-- COLONNE DROITE : chiffres enrichis -->
       <div class="results">
         <div class="kpi-grid" id="kpiGrid"></div>
-        <div class="card chart-card">
-          <h3>Exposition de la SFD, mois par mois <span class="hint">avances en cours</span></h3>
-          <canvas id="expoCanvas" width="640" height="200"></canvas>
+
+        <div class="card">
+          <h3>Comparaison des scénarios <span class="hint">la promesse tient partout</span></h3>
+          <div id="tableauScen" class="table-wrap"></div>
         </div>
-        <div class="card chart-card">
-          <h3>Coût pour le membre selon son tour <span class="hint">l'épargnant qui attend paie ~0</span></h3>
-          <canvas id="coutCanvas" width="640" height="200"></canvas>
+
+        <div class="grid2">
+          <div class="card">
+            <h3>Coût du membre par tour <span class="hint">décomposé · le dernier tour ≈ 0</span></h3>
+            <div id="coutDecompo" class="table-wrap"></div>
+          </div>
+          <div class="card">
+            <h3>Flux de la SFD <span class="hint">avances, intérêts, couverture</span></h3>
+            <div id="fluxSfd" class="table-wrap"></div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="card chart-card">
+            <h3>Exposition SFD, mois par mois <span class="hint">avances en cours</span></h3>
+            <canvas id="expoCanvas" width="500" height="190"></canvas>
+          </div>
+          <div class="card chart-card">
+            <h3>Distribution du P&L brut <span class="hint">sur tous les runs</span></h3>
+            <canvas id="pnlCanvas" width="500" height="190"></canvas>
+          </div>
         </div>
       </div>
     </div>
-  </section>
-</main>
-
-<!-- ============ NIVEAU PARAMÈTRES (tous, interactifs) ============ -->
-<main id="vue-parametres" hidden>
-  <section class="wrap">
-    <h2>Tous les paramètres du modèle</h2>
-    <p class="lead">Chaque levier du modèle, groupé par thème, avec ce qu'il fait. Modifiez ce que vous voulez puis relancez — l'onglet « Les chiffres » utilise ces valeurs.</p>
-    <div class="param-actions">
-      <button id="btnRunParams" class="btn">▶ Relancer la simulation</button>
-      <button id="btnResetParams" class="btn ghost">↺ Valeurs par défaut</button>
-      <span class="param-status" id="paramStatus"></span>
-    </div>
-    <div id="paramGroupes"></div>
   </section>
 </main>
 

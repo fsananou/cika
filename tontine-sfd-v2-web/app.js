@@ -1,29 +1,23 @@
-import { DEFAUTS, simulerPoolDetail, monteCarlo } from './moteur.js';
+import { DEFAUTS, monteCarlo, decompositionCout } from './moteur.js';
 
 const fmt = x => Math.round(x).toLocaleString('fr-FR');
 const fmtM = x => Math.abs(x) >= 1e6 ? (x / 1e6).toFixed(1) + 'M' : Math.round(x / 1e3) + 'k';
 const pct = x => (x * 100).toFixed(x * 100 < 1 && x > 0 ? 1 : 0) + '%';
 const $ = id => document.getElementById(id);
 
-let P = { ...DEFAUTS, _runs: 80 };
-let mode = "garantie";
+// config maître unique (tous les paramètres) + nb de runs
+let PARAMS = { ...DEFAUTS, _runs: 80 };
 
-// ---- navigation niveaux ----
+// ---- navigation : 2 onglets ----
 document.querySelectorAll('.niv-btn').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('.niv-btn').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
   const niv = b.dataset.niv;
-  $('vue-public').hidden = (niv !== 'public');
-  $('vue-investisseur').hidden = (niv !== 'investisseur');
-  $('vue-parametres').hidden = (niv !== 'parametres');
+  $('vue-simulation').hidden = (niv !== 'simulation');
   $('vue-doc').hidden = (niv !== 'doc');
-  if (niv === 'investisseur' && !dernierMC) lancerSim();
-  if (niv === 'parametres') renderParametres();
 }));
 
-// ============ VUE PARAMÈTRES (tous, interactifs) ============
-// objet de config "maître" couvrant TOUS les paramètres (au-delà des 6 sliders investisseur)
-let PARAMS = { ...DEFAUTS };
+// ============ SCHÉMA DE TOUS LES PARAMÈTRES ============
 const SCHEMA = [
   { grp: '📐 Structure du cercle', desc: "La taille et la durée des pools.", items: [
     { k: 'n_pools', nom: 'Nombre de pools', d: "Combien de cercles tournent en parallèle (échelle du portefeuille).", t: 'range', min: 10, max: 100, step: 10 },
@@ -61,266 +55,156 @@ const SCHEMA = [
   { grp: '🌩️ Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
     { k: 'choc_fuite', nom: 'Choc de fuite', d: "Points de fuite ajoutés en stress comportemental.", t: 'range', min: 0, max: 0.15, step: 0.01, fmt: 'pct' },
+    { k: 'bascule_urgents', nom: 'Bascule vers urgents', d: "Part de patients qui deviennent pressés sous stress.", t: 'range', min: 0, max: 0.6, step: 0.05, fmt: 'pct' },
     { k: 'macro_actif', nom: 'Stress macro', d: "Choc économique systémique (fuites corrélées).", t: 'bool' },
     { k: 'z_choc', nom: 'Sévérité du choc macro', d: "Ampleur du choc (négatif = mauvaise conjoncture).", t: 'range', min: -4, max: 0, step: 0.5 },
+    { k: 'z_persistance', nom: 'Durée du choc (mois)', d: "Combien de mois le choc macro persiste.", t: 'range', min: 0, max: 8, step: 1 },
   ]},
 ];
 
-function fmtParam(v, fmt) {
-  if (fmt === 'k') return fmt0(v);
-  if (fmt === 'pct') return (v * 100).toFixed(1).replace(/\.0$/, '') + '%';
-  if (fmt === 'x') return v.toFixed(1) + '×';
+const fmt0 = x => Math.round(x).toLocaleString('fr-FR');
+function fmtParam(v, f) {
+  if (f === 'k') return fmt0(v);
+  if (f === 'pct') return (v * 100).toFixed(1).replace(/\.0$/, '') + '%';
+  if (f === 'x') return v.toFixed(1) + '×';
   return (typeof v === 'number' && v % 1 !== 0) ? v.toFixed(2) : v;
 }
-const fmt0 = x => Math.round(x).toLocaleString('fr-FR');
 
+// ---- presets de scénario (ajustent les paramètres de stress) ----
+const PRESETS = {
+  nominal: { comportemental_actif: false, choc_fuite: 0, bascule_urgents: 0, macro_actif: false, z_choc: 0, z_persistance: 0, part_urgent: 0.20, part_epargnant: 0.30, rho_mensuel: 0.02 },
+  comportemental: { comportemental_actif: true, choc_fuite: 0.06, bascule_urgents: 0.30, macro_actif: false, z_choc: 0, z_persistance: 0 },
+  macro: { comportemental_actif: false, choc_fuite: 0, bascule_urgents: 0, macro_actif: true, z_choc: -2.5, z_persistance: 4 },
+  combine: { comportemental_actif: true, choc_fuite: 0.06, bascule_urgents: 0.30, macro_actif: true, z_choc: -2.5, z_persistance: 4 },
+  bids_faibles: { part_urgent: 0.05, part_epargnant: 0.70, rho_mensuel: 0.01, comportemental_actif: false, macro_actif: false },
+};
+
+// ---- rendu des paramètres ----
 function renderParametres() {
   $('paramGroupes').innerHTML = SCHEMA.map(g => `
-    <div class="param-groupe">
-      <h3>${g.grp}</h3>
-      <div class="grp-desc">${g.desc}</div>
+    <details class="param-groupe" open>
+      <summary>${g.grp}<span class="grp-desc">${g.desc}</span></summary>
       ${g.items.map(it => paramRow(it)).join('')}
-    </div>`).join('');
-  // attacher les handlers
+    </details>`).join('');
   SCHEMA.flatMap(g => g.items).forEach(it => attachParam(it));
 }
-
 function paramRow(it) {
   let ctrl = '';
-  if (it.t === 'range') {
-    ctrl = `<div class="p-ctrl"><input type="range" id="px_${it.k}" min="${it.min}" max="${it.max}" step="${it.step}" value="${PARAMS[it.k]}"><span class="p-val" id="pv_${it.k}">${fmtParam(PARAMS[it.k], it.fmt)}</span></div>`;
-  } else if (it.t === 'bool') {
-    ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="1" class="${PARAMS[it.k] ? 'on' : ''}">Oui</button><button data-v="0" class="${!PARAMS[it.k] ? 'on' : ''}">Non</button></div>`;
-  } else if (it.t === 'mode') {
-    ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="garantie" class="${PARAMS[it.k] === 'garantie' ? 'on' : ''}">Garantie</button><button data-v="nue" class="${PARAMS[it.k] === 'nue' ? 'on' : ''}">Nue</button></div>`;
-  }
-  return `<div class="param-row"><div><div class="p-nom">${it.nom}</div><div class="p-desc">${it.d}</div></div>${ctrl}<div></div></div>`;
+  if (it.t === 'range') ctrl = `<div class="p-ctrl"><input type="range" id="px_${it.k}" min="${it.min}" max="${it.max}" step="${it.step}" value="${PARAMS[it.k]}"><span class="p-val" id="pv_${it.k}">${fmtParam(PARAMS[it.k], it.fmt)}</span></div>`;
+  else if (it.t === 'bool') ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="1" class="${PARAMS[it.k] ? 'on' : ''}">Oui</button><button data-v="0" class="${!PARAMS[it.k] ? 'on' : ''}">Non</button></div>`;
+  else if (it.t === 'mode') ctrl = `<div class="p-toggle" id="px_${it.k}"><button data-v="garantie" class="${PARAMS[it.k] === 'garantie' ? 'on' : ''}">Garantie</button><button data-v="nue" class="${PARAMS[it.k] === 'nue' ? 'on' : ''}">Nue</button></div>`;
+  return `<div class="param-row"><div><div class="p-nom">${it.nom}</div><div class="p-desc">${it.d}</div></div>${ctrl}</div>`;
 }
-
 function attachParam(it) {
   const el = $('px_' + it.k); if (!el) return;
-  if (it.t === 'range') {
-    el.addEventListener('input', e => { PARAMS[it.k] = +e.target.value; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); $('paramStatus').textContent = '⟳ modifié — relancez pour voir l\'effet'; });
-  } else {
-    el.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => {
-      el.querySelectorAll('button').forEach(b => b.classList.remove('on')); btn.classList.add('on');
-      const v = btn.dataset.v; PARAMS[it.k] = (it.t === 'mode') ? v : (v === '1');
-      $('paramStatus').textContent = '⟳ modifié — relancez pour voir l\'effet';
-    }));
-  }
+  if (it.t === 'range') el.addEventListener('input', e => { PARAMS[it.k] = +e.target.value; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); marquerModifie(); });
+  else el.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => { el.querySelectorAll('button').forEach(b => b.classList.remove('on')); btn.classList.add('on'); PARAMS[it.k] = (it.t === 'mode') ? btn.dataset.v : (btn.dataset.v === '1'); marquerModifie(); }));
 }
+function syncParametres() { SCHEMA.flatMap(g => g.items).forEach(it => { const el = $('px_' + it.k); if (!el) return; if (it.t === 'range') { el.value = PARAMS[it.k]; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else { el.querySelectorAll('button').forEach(b => b.classList.toggle('on', (it.t === 'mode' ? b.dataset.v === PARAMS[it.k] : (b.dataset.v === '1') === !!PARAMS[it.k]))); } }); }
+function marquerModifie() { $('simStatus').textContent = '⟳ relancez pour voir l\'effet'; }
 
-$('btnRunParams') && $('btnRunParams').addEventListener('click', () => {
-  // basculer vers l'onglet chiffres et lancer avec PARAMS
-  document.querySelectorAll('.niv-btn').forEach(x => x.classList.toggle('active', x.dataset.niv === 'investisseur'));
-  $('vue-public').hidden = true; $('vue-parametres').hidden = true; $('vue-doc').hidden = true; $('vue-investisseur').hidden = false;
-  lancerSimAvec(PARAMS);
-});
-$('btnResetParams') && $('btnResetParams').addEventListener('click', () => { PARAMS = { ...DEFAUTS }; renderParametres(); $('paramStatus').textContent = 'valeurs par défaut restaurées'; });
-
-// ============ ANIMATION GRAND PUBLIC ============
-const MODE_HINTS = {
-  nue: "Tontine classique : si quelqu'un disparaît avec l'argent, le groupe perd. Pas de frais, mais pas de sécurité.",
-  garantie: "Votre tour est sécurisé : même si un membre disparaît, vous recevez votre dû. Ceux qui veulent passer tôt paient ; ceux qui attendent reçoivent gratuitement.",
-};
-let anim = null, animIdx = 0, playTimer = null;
-
-function genererAnim() {
-  const p = { ...P, mode, n_pools: 1, m_membres: 10, c: 100000, n_cycles: 1 };
-  // choisir une graine qui produit au moins une fuite, pour la démo
-  let g = 7;
-  for (let tryG = 1; tryG < 60; tryG++) {
-    const test = simulerPoolDetail(p, tryG);
-    if (test.journal.some(j => j.fuite)) { g = tryG; break; }
-  }
-  anim = simulerPoolDetail(p, g);
-  animIdx = 0;
-  renderAnim();
-}
-
-function renderAnim() {
-  if (!anim) return;
-  const j = anim.journal[animIdx];
-  $('moisNum').textContent = j.tour;
-  // membres
-  $('cercle').innerHTML = j.snap.map(s => {
-    let cls = 'membre';
-    if (s.aFui) cls += ' fui';
-    else if (s.estBenef) cls += ' benef';
-    else if (s.aEncaisse) cls += ' enc';
-    else if (s.type === 'urgent') cls += ' urg';
-    else cls += ' pat';
-    let etat = '';
-    if (s.aFui) etat = 'parti';
-    else if (s.estBenef) etat = '← reçoit';
-    else if (s.aEncaisse) etat = 'a reçu';
-    return `<div class="${cls}"><div class="av">${s.nom[0]}</div><div class="nom">${s.nom}</div><div class="etat">${etat}</div></div>`;
-  }).join('');
-  // pot
-  if (j.benef) {
-    $('potBenef').textContent = j.benef.nom;
-    $('potMontant').textContent = fmt(j.benef.recu);
-    if (mode === 'garantie' && j.benef.bid > 0) {
-      const det = j.benef.bideur
-        ? `${j.benef.nom} a payé ${fmt(j.benef.bid)} pour passer tôt (intérêts + sécurité). Reçoit ${fmt(j.benef.recu)}.`
-        : `${j.benef.nom} attend son tour : il reçoit ${fmt(j.benef.recu)} en payant peu (${fmt(j.benef.bid)}).`;
-      $('potDetail').textContent = det;
-    } else if (mode === 'garantie') {
-      $('potDetail').textContent = `${j.benef.nom} a attendu son tour : il reçoit tout, gratuitement (épargne).`;
-    } else {
-      $('potDetail').textContent = `${j.benef.nom} reçoit le pot. Tontine simple : aucun frais.`;
-    }
-  } else {
-    $('potBenef').textContent = '—'; $('potMontant').textContent = '0'; $('potDetail').textContent = '';
-  }
-  // événement
-  const evDiv = $('evenement');
-  if (j.fuite) {
-    if (mode === 'garantie' && j.garantie && j.garantie.residuel < 1) {
-      evDiv.className = 'evenement garantie';
-      evDiv.innerHTML = `⚠️ <b>${j.fuite.nom} disparaît</b> après avoir reçu son argent (trou de ${fmt(j.fuite.trou)}). → La <b>garantie comble le trou</b> : les suivants sont servis normalement. <b>Personne ne perd.</b>`;
-    } else if (mode === 'garantie') {
-      evDiv.className = 'evenement fuite';
-      evDiv.innerHTML = `⚠️ <b>${j.fuite.nom} disparaît</b> (trou ${fmt(j.fuite.trou)}). La garantie est dépassée — cas extrême et rare.`;
-    } else {
-      evDiv.className = 'evenement fuite';
-      evDiv.innerHTML = `❌ <b>${j.fuite.nom} disparaît</b> avec l'argent (${fmt(j.fuite.trou)}). En tontine simple, <b>le groupe subit la perte</b> — il n'y a aucune protection.`;
-    }
-  } else {
-    evDiv.className = 'evenement';
-    evDiv.innerHTML = j.benef ? `${j.benef.nom} reçoit son tour. Tout se passe normalement.` : `Mois ${j.tour}.`;
-  }
-  // badge promesse
-  const casse = (mode === 'nue' && j.fuite) || (j.garantie && j.garantie.residuel > 1);
-  const badge = $('promesseBadge');
-  if (mode === 'nue') {
-    const fuiteAvant = anim.journal.slice(0, animIdx + 1).some(x => x.fuite);
-    badge.textContent = fuiteAvant ? '✕ groupe exposé' : '— sans garantie';
-    badge.className = 'promesse-badge' + (fuiteAvant ? ' casse' : '');
-  } else {
-    badge.textContent = casse ? '✕ promesse menacée' : '✓ tous servis';
-    badge.className = 'promesse-badge' + (casse ? ' casse' : '');
-  }
-  $('animStep').textContent = `mois ${j.tour} / ${anim.journal.length}`;
-}
-
-$('btnNext').onclick = () => { if (animIdx < anim.journal.length - 1) { animIdx++; renderAnim(); } };
-$('btnPrev').onclick = () => { if (animIdx > 0) { animIdx--; renderAnim(); } };
-$('btnReset').onclick = () => { stopPlay(); animIdx = 0; renderAnim(); };
-$('btnPlay').onclick = () => {
-  if (playTimer) { stopPlay(); return; }
-  $('btnPlay').textContent = '⏸ Pause';
-  if (animIdx >= anim.journal.length - 1) animIdx = 0;
-  playTimer = setInterval(() => {
-    if (animIdx < anim.journal.length - 1) { animIdx++; renderAnim(); }
-    else stopPlay();
-  }, 1400);
-};
-function stopPlay() { clearInterval(playTimer); playTimer = null; $('btnPlay').textContent = '▶ Dérouler'; }
-
-document.querySelectorAll('#modeSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('#modeSeg .seg-btn').forEach(x => x.classList.remove('active'));
-  b.classList.add('active'); mode = b.dataset.mode;
-  $('modeHint').textContent = MODE_HINTS[mode];
-  stopPlay(); genererAnim(); renderExplications();
+// presets
+document.querySelectorAll('#presetSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#presetSeg .seg-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  Object.assign(PARAMS, PRESETS[b.dataset.preset]);
+  syncParametres(); lancer();
 }));
+$('btnReset').addEventListener('click', () => { PARAMS = { ...DEFAUTS, _runs: PARAMS._runs }; document.querySelectorAll('#presetSeg .seg-btn').forEach((x, i) => x.classList.toggle('active', i === 0)); syncParametres(); lancer(); });
+$('btnRun').addEventListener('click', lancer);
+$('c_runs').addEventListener('input', e => { PARAMS._runs = +e.target.value; $('o_runs').textContent = e.target.value; });
 
-function renderExplications() {
-  const ex = mode === 'garantie' ? [
-    { t: 'Vous attendez ?', d: "Vous recevez votre tour <b>gratuitement</b> — c'est votre épargne, on ne vous prend rien." },
-    { t: 'Vous êtes pressé ?', d: "Vous pouvez <b>payer pour passer tôt</b> (comme un petit crédit). Ce paiement finance la sécurité de tous." },
-    { t: 'Quelqu\'un disparaît ?', d: "La <b>garantie comble le trou</b>. Les autres sont servis quand même. <b>Vous ne perdez jamais votre tour.</b>" },
-  ] : [
-    { t: 'Pas de frais', d: "La tontine simple ne coûte rien — c'est la rotation classique." },
-    { t: 'Mais aucune sécurité', d: "Si quelqu'un part avec l'argent après l'avoir reçu, <b>le groupe perd</b>." },
-    { t: 'Le risque est sur vous', d: "Vous comptez sur la confiance. La <b>tontine sécurisée</b> enlève ce risque." },
-  ];
-  $('explications').innerHTML = ex.map(e => `<div class="ex"><b>${e.t}</b><br>${e.d}</div>`).join('');
-}
-
-// ============ INVESTISSEUR ============
-const SCEN = {
-  nominal: p => p,
-  comportemental: p => { p.comportemental_actif = true; p.choc_fuite = 0.06; p.bascule_urgents = 0.30; return p; },
-  macro: p => { p.macro_actif = true; p.z_choc = -2.5; p.z_persistance = 4; return p; },
-  combine: p => { p.comportemental_actif = true; p.choc_fuite = 0.06; p.bascule_urgents = 0.30; p.macro_actif = true; p.z_choc = -2.5; p.z_persistance = 4; return p; },
-  bids_faibles: p => { p.part_urgent = 0.05; p.part_modere = 0.25; p.part_epargnant = 0.70; p.rho_mensuel = 0.01; return p; },
-};
-const SCEN_HINT = {
-  nominal: "Conditions normales.", comportemental: "Plus de fuites (+6 pts) et de membres pressés.",
-  macro: "Choc économique : fuites corrélées.", combine: "Comportemental + macro ensemble — le test le plus dur.",
-  bids_faibles: "Peu de membres enchérissent (population d'épargnants).",
-};
-let scen = 'nominal', dernierMC = null;
-
-const sliders = [['c_np', 'o_np', 'n_pools', v => v], ['c_m', 'o_m', 'm_membres', v => v], ['c_c', 'o_c', 'c', v => fmt(v)], ['c_pf', 'o_pf', 'p_fuite_base', v => (v * 100).toFixed(0) + '%'], ['c_pp', 'o_pp', 'prime_facteur_prudence', v => v.toFixed(1) + '×'], ['c_runs', 'o_runs', '_runs', v => v]];
-function syncS() { sliders.forEach(([c, o, k]) => $(c).value = P[k]); updO(); }
-function updO() { sliders.forEach(([c, o, k, f]) => $(o).textContent = f(P[k])); }
-sliders.forEach(([c, o, k]) => $(c).addEventListener('input', e => { P[k] = +e.target.value; updO(); }));
-document.querySelectorAll('#scenSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('#scenSeg .seg-btn').forEach(x => x.classList.remove('active'));
-  b.classList.add('active'); scen = b.dataset.scen; $('scenHint').textContent = SCEN_HINT[scen]; lancerSim();
-}));
-$('btnRun').onclick = lancerSim;
-
-function lancerSim() {
-  let p = SCEN[scen]({ ...DEFAUTS, n_pools: P.n_pools, m_membres: P.m_membres, c: P.c, p_fuite_base: P.p_fuite_base, prime_facteur_prudence: P.prime_facteur_prudence });
-  lancerSimAvec(p, P._runs);
-}
-function lancerSimAvec(pBase, nRuns) {
-  $('btnRun').textContent = 'Calcul…';
+// ============ SIMULATION + CHIFFRES ============
+let dernier = null;
+function lancer() {
+  $('btnRun').textContent = 'Calcul…'; $('simStatus').textContent = '';
   setTimeout(() => {
-    const p = { ...pBase };
-    const a = monteCarlo(p, nRuns || P._runs, 12345);
-    dernierMC = a;
-    renderKPIs(a, p);
-    drawExpo(a, p);
-    drawCout(p);
+    const a = monteCarlo({ ...PARAMS }, PARAMS._runs, 12345);
+    dernier = a;
+    renderKPIs(a, PARAMS);
+    drawExpo(a, PARAMS);
+    renderCoutDecompo(PARAMS);
+    renderFluxSfd(a, PARAMS);
+    renderTableauScenarios();
+    drawPnlDist(a);
     $('btnRun').textContent = '▶ Lancer';
   }, 20);
 }
+
+function kpiV(o, fmtf) { return `${fmtf(o.moy)} <span class="pp">[${fmtf(o.p5)}–${fmtf(o.p95)}]</span>`; }
 
 function renderKPIs(a, p) {
   const pot = (p.m_membres - 1) * p.c;
   const items = [
     { l: 'Promesse tenue', v: pct(a.taux_continuite), c: a.taux_continuite >= 0.999 ? 'ok' : 'bad', s: 'tous les tours servis' },
-    { l: 'P&L brut Opérateur', v: fmtM(a.pnlOp.moy), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pools · hors coûts` },
-    { l: 'Revenu brut / pool', v: fmtM(a.margePool.moy), c: 'brand', s: 'primes + surplus d\'enchère' },
-    { l: 'Risque porté SFD', v: fmtM(a.perteSfd.moy), c: 'brand', s: 'avances non récupérées' },
+    { l: 'P&L brut Opérateur', v: kpiV(a.pnlOp, fmtM), c: a.pnlOp.moy > 0 ? 'ok' : 'bad', s: `${p.n_pools} pools · primes + surplus` },
+    { l: 'Revenu / pool', v: kpiV(a.margePool, fmtM), c: 'brand', s: 'brut, hors coûts' },
+    { l: 'Risque porté SFD', v: kpiV(a.perteSfd, fmtM), c: 'brand', s: 'avances non récupérées' },
+    { l: 'Exposition SFD max', v: kpiV(a.expoMax, fmtM), c: 'brand', s: 'avances en cours (pic)' },
     { l: 'Coût membre tour 1', v: pct(a.coutTour1.moy / pot), c: a.coutTour1.moy / pot < 0.2 ? 'ok' : 'brand', s: 'le dernier tour ≈ 0' },
-    { l: 'Fuites moyennes', v: Math.round(a.fuites.moy), c: 'brand', s: 'bénéficiaires disparus' },
+    { l: 'Fuites moyennes', v: kpiV(a.fuites, x => Math.round(x).toString()), c: 'brand', s: 'bénéficiaires disparus' },
+    { l: 'Tours gratuits', v: kpiV(a.nGratuits, x => Math.round(x).toString()), c: 'brand', s: 'épargnants qui attendent' },
   ];
   $('kpiGrid').innerHTML = items.map(i => `<div class="kpi"><div class="lbl">${i.l}</div><div class="val ${i.c}">${i.v}</div><small>${i.s}</small></div>`).join('');
 }
 
+// décomposition du coût membre par tour (tableau)
+function renderCoutDecompo(p) {
+  const rows = decompositionCout(p);
+  const tb = rows.map(r => `<tr><td>T${r.tour}</td><td>${fmt(r.interets)}</td><td>${fmt(r.prime)}</td><td>${fmt(r.marge)}</td><td><b>${fmt(r.total)}</b></td><td>${(r.total / r.pot * 100).toFixed(0)}%</td></tr>`).join('');
+  $('coutDecompo').innerHTML = `<table class="data"><thead><tr><th>Tour</th><th>Intérêts SFD</th><th>Prime garantie</th><th>Marge Op.</th><th>Total payé</th><th>% pot</th></tr></thead><tbody>${tb}</tbody></table>`;
+}
+
+// flux SFD agrégés
+function renderFluxSfd(a, p) {
+  const lignes = [
+    ['Avances totales (décaissées)', a.avanceCumulee.moy, 'la SFD avance le net aux gagnants'],
+    ['Intérêts SFD perçus', a.interetsSfd.moy, 'le prix du crédit-relais'],
+    ['Trou couvert par le FGE', a.couvertFge.moy, 'fonds endogène (primes + saisies)'],
+    ['Trou couvert par la SFD', a.couvertSfd.moy, 'sa tranche junior — peau dans le jeu'],
+    ['FGE alimenté (primes)', a.fgeProvisions.moy, 'primes de garantie collectées'],
+    ['FGE alimenté (saisies)', a.fgeSaisies.moy, 'garanties d\'enchère des fuyards'],
+  ];
+  $('fluxSfd').innerHTML = `<table class="data"><tbody>${lignes.map(l => `<tr><td>${l[0]}</td><td class="num"><b>${fmtM(l[1])}</b></td><td class="muted">${l[2]}</td></tr>`).join('')}</tbody></table>`;
+}
+
+// tableau comparatif des 5 scénarios
+function renderTableauScenarios() {
+  const noms = { nominal: 'Nominal', comportemental: 'Comportemental', macro: 'Macro', combine: 'Combiné', bids_faibles: 'Bids faibles' };
+  const base = { ...PARAMS };
+  const rows = Object.keys(PRESETS).map(s => {
+    const p = { ...DEFAULTS_SANS_STRESS(base), ...PRESETS[s] };
+    const a = monteCarlo(p, Math.min(60, PARAMS._runs), 12345);
+    const pot = (p.m_membres - 1) * p.c;
+    return { s, nom: noms[s], cont: a.taux_continuite, pnl: a.pnlOp.moy, perte: a.perteSfd.moy, cout: a.coutTour1.moy / pot, fuites: a.fuites.moy };
+  });
+  $('tableauScen').innerHTML = `<table class="data"><thead><tr><th>Scénario</th><th>Promesse</th><th>P&L brut</th><th>Risque SFD</th><th>Coût T1</th><th>Fuites</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.nom}</td><td class="${r.cont >= 0.999 ? 'g' : 'r'}">${pct(r.cont)}</td><td class="g">${fmtM(r.pnl)}</td><td>${fmtM(r.perte)}</td><td>${pct(r.cout)}</td><td>${Math.round(r.fuites)}</td></tr>`).join('')}</tbody></table>`;
+}
+function DEFAULTS_SANS_STRESS(base) { return { ...base, comportemental_actif: false, macro_actif: false, choc_fuite: 0, z_choc: 0, z_persistance: 0, bascule_urgents: 0 }; }
+
+// ---- graphiques ----
 function drawExpo(a, p) {
   const cv = $('expoCanvas'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
   const prof = a.expoProfil; if (!prof) return;
-  const mx = Math.max(...prof, 1), pad = 36;
+  const mx = Math.max(...prof, 1), pad = 40;
   const xs = i => pad + (i / (prof.length - 1)) * (W - pad - 8), ys = v => H - 22 - (v / mx) * (H - 36);
   ctx.beginPath(); ctx.moveTo(xs(0), ys(0)); prof.forEach((v, i) => ctx.lineTo(xs(i), ys(v))); ctx.lineTo(xs(prof.length - 1), ys(0)); ctx.closePath(); ctx.fillStyle = 'rgba(15,76,74,.12)'; ctx.fill();
   ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath(); prof.forEach((v, i) => i ? ctx.lineTo(xs(i), ys(v)) : ctx.moveTo(xs(i), ys(v))); ctx.stroke();
   ctx.fillStyle = '#5b6b87'; ctx.font = '11px sans-serif'; ctx.fillText(fmtM(mx), 4, 14); ctx.fillText('0', 4, H - 22); ctx.textAlign = 'center'; ctx.fillText('mois →', W / 2, H - 4);
 }
-
-function drawCout(p) {
-  const cv = $('coutCanvas'), ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  const m = p.m_membres, pot = (m - 1) * p.c, rSfd = p.r_sfd_annuel / 12;
-  const couts = [];
-  for (let slot = 0; slot < m; slot++) {
-    const duree = Math.max(1, m - (slot + 1)), avance = Math.max(0, pot - slot * p.c);
-    const interets = pot * rSfd * duree, prime = avance <= 0 ? 0 : p.prime_facteur_prudence * p.p_fuite_base * (avance / 2) * (duree / (m - 1)), marge = p.prime_operateur_taux * pot;
-    couts.push((interets + prime + marge) / pot * 100);
-  }
-  const mx = Math.max(...couts, 20), pad = 30, bw = (W - pad * 2) / m;
-  couts.forEach((cv2, i) => { const x = pad + i * bw, h = (cv2 / mx) * (H - 40); ctx.fillStyle = '#0f4c4a'; ctx.fillRect(x + 4, H - 24 - h, bw - 8, h); ctx.fillStyle = '#5b6b87'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('T' + (i + 1), x + bw / 2, H - 10); ctx.fillText(cv2.toFixed(0) + '%', x + bw / 2, H - 28 - h); });
-  // seuil 15%
-  const ys = v => H - 24 - (v / mx) * (H - 40); ctx.strokeStyle = '#b18a3a'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(pad, ys(15)); ctx.lineTo(W - pad, ys(15)); ctx.stroke(); ctx.setLineDash([]);
+function drawPnlDist(a) {
+  const cv = $('pnlCanvas'); if (!cv) return; const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
+  const data = (a._pnls || []).map(x => x / 1e6); if (!data.length) return;
+  const lo = Math.min(...data), hi = Math.max(...data), bins = 24, w = (hi - lo) / bins || 1, cnt = new Array(bins).fill(0);
+  data.forEach(v => { let b = Math.floor((v - lo) / w); b = Math.max(0, Math.min(bins - 1, b)); cnt[b]++; });
+  const mc = Math.max(...cnt), pad = 30, bw = (W - pad * 2) / bins;
+  cnt.forEach((c, i) => { const x = pad + i * bw, h = (c / mc) * (H - 38); const mid = lo + (i + 0.5) * w; ctx.fillStyle = mid >= 0 ? '#15803d' : '#b91c1c'; ctx.fillRect(x, H - 20 - h, bw - 1, h); });
+  ctx.fillStyle = '#5b6b87'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left'; ctx.fillText(lo.toFixed(0) + 'M', pad, H - 4); ctx.textAlign = 'right'; ctx.fillText(hi.toFixed(0) + 'M', W - 4, H - 4); ctx.textAlign = 'center'; ctx.fillText('P&L brut →', W / 2, H - 4);
 }
 
 // ---- init ----
-$('modeHint').textContent = MODE_HINTS.garantie;
-$('scenHint').textContent = SCEN_HINT.nominal;
-syncS();
-genererAnim();
-renderExplications();
+PARAMS._runs = 80;
+renderParametres();
+$('o_runs').textContent = PARAMS._runs;
+$('c_runs').value = PARAMS._runs;
+lancer();

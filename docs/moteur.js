@@ -281,13 +281,17 @@ export function simulerPoolDetail(p, graine) {
 
 // ---- Monte Carlo ----
 export function monteCarlo(p, nRuns, graineBase) {
-  const acc = { pnlOp: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [] };
+  const acc = { pnlOp: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [],
+                interetsSfd: [], primes: [], surplusEnchere: [], fgeProvisions: [], fgeSaisies: [], couvertFge: [], couvertSfd: [], avanceCumulee: [] };
   let expoProfil = null;
   for (let i = 0; i < nRuns; i++) {
     const r = simulerRun(p, graineBase + i);
     acc.pnlOp.push(r.pnlOp); acc.continuite.push(r.continuiteOk ? 1 : 0); acc.residuel.push(r.residuel);
     acc.perteSfd.push(r.perteSfd); acc.expoMax.push(r.expoMax); acc.fuites.push(r.nFuites);
     acc.coutTour1.push(r.coutTour1); acc.margePool.push(r.margePool); acc.nGratuits.push(r.nGratuits);
+    acc.interetsSfd.push(r.interetsSfd); acc.primes.push(r.primes); acc.surplusEnchere.push(r.surplusEnchere);
+    acc.fgeProvisions.push(r.fgeProvisions); acc.fgeSaisies.push(r.fgeSaisies);
+    acc.couvertFge.push(r.couvertFge); acc.couvertSfd.push(r.couvertSfd); acc.avanceCumulee.push(r.avanceCumulee);
     if (!expoProfil) expoProfil = r.expoMois.map(() => 0);
     r.expoMois.forEach((v, j) => expoProfil[j] += v / nRuns);
   }
@@ -297,5 +301,21 @@ export function monteCarlo(p, nRuns, graineBase) {
   ag.p_promesse_cassee = acc.residuel.filter(x => x > 1e-6).length / nRuns;
   ag.expoProfil = expoProfil;
   ag._pertes = acc.perteSfd;
+  ag._pnls = acc.pnlOp;
   return ag;
+}
+
+// ---- décomposition du coût membre par tour (déterministe, pour affichage) ----
+export function decompositionCout(p) {
+  const m = p.m_membres, pot = (m - 1) * p.c, rSfd = rSfdMensuel(p);
+  const rows = [];
+  for (let slot = 0; slot < m; slot++) {
+    const duree = Math.max(1, m - (slot + 1));
+    const avance = Math.max(0, pot - slot * p.c);
+    const interets = pot * rSfd * duree;
+    const prime = (p.mode === 'garantie' && p.prime_active && avance > 0) ? primeGarantie(avance, duree, p.p_fuite_base, m - 1, p.prime_facteur_prudence) : 0;
+    const marge = p.mode === 'garantie' ? p.prime_operateur_taux * pot : 0;
+    rows.push({ tour: slot + 1, interets, prime, marge, total: interets + prime + marge, pot });
+  }
+  return rows;
 }
