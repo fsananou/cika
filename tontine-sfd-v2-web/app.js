@@ -69,8 +69,7 @@ const SCHEMA = [
     { k: 'cycle1_scoring_actif', nom: 'Accès filtré par score', d: "Au cycle 1, n'autorise à emprunter tôt que les scores élevés (seuil décroissant du tour 1 à M/2).", t: 'bool' },
     { k: 'cycle1_pct_t1', nom: 'Seuil score tour 1', d: "Percentile minimal de score requis au tour 1 (ex. P90 = top 10%).", t: 'range', min: 0.5, max: 0.95, step: 0.05, fmt: 'pct' },
     { k: 'cycle1_pct_mid', nom: 'Seuil score tour M/2', d: "Percentile minimal au milieu du cycle (le seuil décroît jusque-là).", t: 'range', min: 0.3, max: 0.8, step: 0.05, fmt: 'pct' },
-    { k: 'alpha_declenchement', nom: 'Seuil de déclenchement α', d: "L'enchère ne s'ouvre que si la collecte du tour atteint α × M × cotisation.", t: 'range', min: 0.5, max: 1, step: 0.05, fmt: 'pct' },
-    { k: 'cycle1_reduction_fuite', nom: 'Réduction de fuite (sélectionnés)', d: "Hypothèse : un emprunteur passé par le filtre fuit dans cette proportion du taux de base (0,5 = fuit 2× moins). C'est ce qui rend le filtre protecteur.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
+    { k: 'cycle1_reduction_fuite', nom: 'Réduction de fuite (sélectionnés)', d: "Hypothèse : un emprunteur passé par le filtre fuit dans cette proportion du taux de base (0,33 = fuit 3× moins). C'est ce qui rend le filtre protecteur.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
   ]},
   { grp: 'Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
@@ -272,13 +271,13 @@ function drawFiltreDemo(p) {
   $('vulnLegende').innerHTML =
     `<span class="lg"><i class="sw" style="background:rgba(220,38,38,.80)"></i> sans filtre de score</span>` +
     `<span class="lg"><i class="sw" style="background:#0f4c4a"></i> avec filtre de score</span>` +
-    `<span class="lg-note">Résiduel moyen par pool (perte non couverte) au cycle 1, selon le taux de fuite. Le filtre réduit la perte de ~${Math.round(gain)} % en moyenne ici : en réservant les premiers tours aux meilleurs profils (qui fuient ${Math.round((1 - (p.cycle1_reduction_fuite ?? 0.5)) * 100)} % de moins, par hypothèse), on évite les fuites précoces coûteuses quand le FGE est encore vide.</span>`;
+    `<span class="lg-note">Résiduel moyen par pool (perte non couverte) au cycle 1, selon le taux de fuite. Le filtre réduit la perte de ~${Math.round(gain)} % en moyenne ici : en réservant les premiers tours aux meilleurs profils (qui fuient ${Math.round((1 - (p.cycle1_reduction_fuite ?? 0.33)) * 100)} % de moins, par hypothèse), on évite les fuites précoces coûteuses quand le FGE est encore vide.</span>`;
 }
 
 // ---- page FLUX : déroulé d'un pool, tour par tour ----
 let fluxGraine = 101;
 const ACTEUR_CLS = { SFD: 'a-sfd', FGE: 'a-fge', Opérateur: 'a-op', Dépôt: 'a-depot', Épargnants: 'a-ep', Membres: 'a-mb', Groupe: 'a-mb' };
-const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos' };
+const TYPE_SIGNE = { fuite: 'neg', couverture: 'neg', résiduel: 'neg', service: 'pos', avance: 'pos', prime: 'pos', cotisation: 'pos', saisie: 'pos', recouvrement: 'pos', rémunération: 'pos', intérêts: 'pos', marge: 'pos', surplus: 'pos', rattrapage: 'pos', remplacement: 'pos' };
 
 function renderFlux() {
   // démo : effet du filtre de score sur les pertes du cycle 1 (avec vs sans)

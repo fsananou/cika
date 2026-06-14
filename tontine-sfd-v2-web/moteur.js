@@ -50,13 +50,12 @@ export const DEFAUTS = {
   // FGE/tranche SFD isolés par pool (défaut) : la solidité d'un pool ne dépend que de lui-même.
   // true = mutualisés entre tous les pools (un pool sain peut renflouer un pool en fuite).
   fge_mutualise: false,
-  // RÈGLES CYCLE 1 : accès filtré par score décroissant (P90 au tour 1 -> P50 au tour M/2),
-  // seuil de déclenchement de l'enchère (alpha), suivi explicite du FGE en constitution.
+  // RÈGLES CYCLE 1 : accès filtré par score décroissant (P90 au tour 1 -> P50 au tour M/2).
+  // L'enchère se déclenche toujours ; on limite le risque de fuite des premiers tours via le filtre.
   cycle1_scoring_actif: true,
   cycle1_pct_t1: 0.90,           // percentile de score requis au tour 1 (P90)
   cycle1_pct_mid: 0.50,          // percentile requis au tour M/2 (P50)
-  cycle1_reduction_fuite: 0.50,  // un emprunteur passé par le filtre fuit 2× moins (meilleur profil)
-  alpha_declenchement: 0.80,     // l'enchère ne s'ouvre que si cotisations >= alpha * M * c
+  cycle1_reduction_fuite: 0.33,  // un emprunteur passé par le filtre fuit 3× moins (meilleur profil)
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
   secteurs: [["commerce", 0.30, 0.30], ["agriculture", 0.20, 0.45], ["transport", 0.15, 0.25], ["services", 0.20, 0.15], ["artisanat", 0.15, 0.20]],
@@ -180,13 +179,18 @@ export function simulerRun(p, graine) {
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui) {
           const moisR = Math.max(1, vie - mb.tEnc);
-          const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.5) : 1);
+          const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.cycle1_reduction_fuite ?? 0.33) : 1);
           const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
             mb.aFui = true; nFuites++;
             let trou = 0;
             for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
             if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
+            // REMPLACEMENT : un remplaçant reprend le sous-compte et RATTRAPE les cotisations des
+            // tours déjà passés (versées au dépôt -> réduit le trou), puis cotisera les tours à venir.
+            const rattrapage = slot * p.c;            // tours 1..t-1 du cycle courant
+            cpt.depot += rattrapage; trou = Math.max(0, trou - rattrapage);
+            mb.remplace = true; mb.filtreScore = false;   // nouveau profil : ne bénéficie pas du filtre
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(getFge(pid), reste) : 0; addFge(pid, -pf2); reste -= pf2; couvertFge += pf2;
             if (reste > 1e-9 && p.tranche_sfd_active) { const plaf = p.plafond_tranche_sfd_frac * Math.max(assietteTranche(pid), 1); const dispo = Math.max(0, plaf - getTranche(pid)); const ps = Math.min(dispo, reste); addTranche(pid, ps); reste -= ps; couvertSfd += ps; perteSfd += ps; }
@@ -198,6 +202,8 @@ export function simulerRun(p, graine) {
       const actifs = membres.filter(mb => !mb.aFui);
       let potColl = 0;
       for (const mb of actifs) if (!mb.aEncaisse) { let taux = p.taux_echec_friction; if (p.mitigation_active) taux *= (1 - p.prelevement_auto_efficacite); const versé = (rng() < taux ? p.c * 0.9 : p.c); potColl += versé; cpt.depot += versé; mb.cotise += p.c; }
+      // les sous-comptes repris par un remplaçant cotisent aussi les tours à venir
+      for (const mb of membres) if (mb.remplace) { potColl += p.c; cpt.depot += p.c; }
       // intérêts sur le dépôt (la SFD rémunère l'épargne déposée)
       if (rDepotMensuel > 0 && cpt.depot > 0) { const it = cpt.depot * rDepotMensuel; cpt.depot += it; interetsDepots += it; }
 
@@ -216,10 +222,8 @@ export function simulerRun(p, graine) {
           const sMin = seuilScorePool(membres, slot);
           elig = elig.filter(mb => mb.score >= sMin);
         }
-        // RÈGLE CYCLE 1.b : seuil de déclenchement — l'enchère ne s'ouvre que si la collecte
-        // du tour atteint alpha * M * c ; sinon, allocation sans enchère (déclenchement forcé).
-        const enchereOuverte = !(cycle1 && p.cycle1_scoring_actif) || (potColl >= p.alpha_declenchement * m * p.c);
-        let eligBid = enchereOuverte ? elig : [];
+        // l'enchère se déclenche toujours (pas de seuil de collecte)
+        let eligBid = elig;
         if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
         if (p.mode === "garantie") {
           let best = null, bestW = -1; for (const mb of eligBid) { const mg = Math.max(0, (m - 1) - slot); const wtp = p.rho_mensuel * mg * pot * mb.urg * Math.exp(gaussian(rng) * p.bid_bruit_sigma); if (wtp > bestW) { bestW = wtp; best = mb; } }
@@ -393,6 +397,13 @@ export function journalPool(p, graine) {
           let trou = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
           flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaissé T${mb.tEnc}) disparaît — avance non remboursée`, -trou);
           if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
+          // remplacement : le remplaçant RATTRAPE les cotisations des tours déjà passés (-> dépôt, réduit le trou)
+          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
+          mb.remplacant = nom;
+          const rattrapage = slot * p.c;
+          if (rattrapage > 0) { cpt.depot += rattrapage; flux(mvt, nom, 'rattrapage', `${nom} remplace ${mb.nom} et rattrape les ${slot} cotisation${slot > 1 ? 's' : ''} des tours passés`, rattrapage); }
+          else flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} (aucun tour passé à rattraper)`, 0);
+          trou = Math.max(0, trou - rattrapage);
           if (p.mode === 'garantie') {
             let reste = trou;
             const pf2 = p.fge_actif ? Math.min(fge, reste) : 0; if (pf2 > 0) { fge -= pf2; reste -= pf2; flux(mvt, 'FGE', 'couverture', `FGE absorbe le trou (première perte)`, -pf2); }
@@ -401,10 +412,6 @@ export function journalPool(p, graine) {
           } else {
             flux(mvt, 'Groupe', 'résiduel', `tontine nue : le groupe subit la perte`, -trou);
           }
-          // remplacement : un nouveau membre reprend le sous-compte et les cotisations restantes (règle de gestion)
-          const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-          mb.remplacant = nom;
-          flux(mvt, nom, 'remplacement', `${nom} remplace ${mb.nom} et reprend les cotisations à venir`, 0);
         }
       }
     }
