@@ -50,10 +50,22 @@
       </div>
     </div>
 
-    <div class="card chart-card">
-      <h3>Frontière : cap SFD → promesse atteignable <span class="hint">meilleure config par niveau de cap</span></h3>
-      <canvas id="cadrageCanvas" width="1020" height="220"></canvas>
-      <div id="cadrageLegende" class="vuln-legende"></div>
+    <!-- LECTURE INVERSÉE : on fixe 2 leviers, l'optimiseur résout le 3e -->
+    <div class="card" id="cadrageResoudreCard" hidden>
+      <h3>Résoudre un levier <span class="hint">fixez les autres, on calcule l'optimal</span></h3>
+      <div class="resoudre-ctrls">
+        <label>Résoudre pour
+          <select id="res_levier"><option value="cs">Cotisation (c)</option><option value="Ms">Taille (M)</option><option value="durees">Durée</option></select></label>
+        <label>Taille M <span id="res_M_wrap"><input type="range" id="res_M" min="4" max="20" step="1" value="10"><output id="res_M_out">10</output></span></label>
+        <label>Cotisation <span id="res_c_wrap"><input type="range" id="res_c" min="1" max="100000" step="1" value="25000"><output id="res_c_out">25k</output></span></label>
+        <label>Durée <span id="res_d_wrap"><input type="range" id="res_d" min="1" max="4" step="1" value="2"><output id="res_d_out">2</output></span></label>
+      </div>
+      <div id="cadrageResoudre" class="cadrage-gagnante"></div>
+    </div>
+
+    <div class="card">
+      <h3>Tableau croisé c × M <span class="hint">promesse par couple, au cap choisi · grisé = usure dépassée</span></h3>
+      <div id="cadrageCroise" class="table-wrap"></div>
     </div>
 
     <div class="card">

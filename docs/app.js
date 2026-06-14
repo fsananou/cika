@@ -383,9 +383,10 @@ function lancerCadrage() {
     BANDES.forEach(b => { opts[b.k] = rangeVals(b); });
     const r = cadrageRisque({ ...PARAMS }, opts);
     dernierCadrage = r;
-    drawCadrage(r);
+    renderCroise(r);
     renderCadrageTable(r);
     renderCadrageGagnante(r);
+    initResoudre();
     $('btnCadrage').textContent = 'Lancer l\'optimisation';
     $('cadrageStatus').textContent = `${r.rows.length} configurations évaluées` + (r.tronque ? ' (tronqué à 2000)' : '');
   }, 20);
@@ -427,40 +428,63 @@ function majCible() {
   $('cadrageGagnante').innerHTML = cfgCard(`Perte sèche minimale pour viser ≥ ${(cible * 100).toFixed(0)}% de promesse`, best);
   $('cadrageCible').innerHTML = '';
 }
-$('cibleSlider').addEventListener('input', majCible);
+$('cibleSlider').addEventListener('input', () => { majCible(); if (dernierCadrage) majResoudre(); });
 
-// cap unique -> on trace la PROMESSE selon la taille du pool M (meilleure config par M),
-// pour montrer quelle structure tient le mieux au cap demandé.
-function drawCadrage(r) {
-  const cv = $('cadrageCanvas'); if (!cv) return;
-  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  if (!r.rows || !r.rows.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Lancez l\'optimisation pour voir le graphe.', 16, H / 2); $('cadrageLegende').innerHTML = ''; return; }
-  // meilleure config (promesse max, usure OK prioritaire) par valeur de M
-  const parM = new Map();
-  for (const x of r.rows) {
-    const cur = parM.get(x.M);
-    const meilleur = !cur || (x.usureOk && !cur.usureOk) || ((x.usureOk === cur.usureOk) && x.promesse > cur.promesse);
-    if (meilleur) parM.set(x.M, x);
-  }
-  const pts = [...parM.values()].sort((a, b) => a.M - b.M);
-  const padL = 48, padR = 14, padB = 28, padT = 14, plotW = W - padL - padR, plotH = H - padB - padT;
-  const xs = i => padL + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
-  const ys = v => padT + plotH - v * plotH;
-  ctx.strokeStyle = '#f3f4f6'; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
-  for (let g = 0; g <= 4; g++) { const yy = padT + (g / 4) * plotH, val = 1 - g / 4; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText((val * 100).toFixed(0) + '%', padL - 6, yy + 3); }
-  ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
-  pts.forEach((p, i) => i ? ctx.lineTo(xs(i), ys(p.promesse)) : ctx.moveTo(xs(i), ys(p.promesse))); ctx.stroke();
-  pts.forEach((p, i) => {
-    ctx.fillStyle = p.usureOk ? '#0f4c4a' : '#dc2626'; ctx.beginPath(); ctx.arc(xs(i), ys(p.promesse), 3.5, 0, 7); ctx.fill();
-    ctx.fillStyle = '#6b7280'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif';
-    ctx.fillText('M' + p.M, xs(i), H - 9);
-    ctx.fillText((p.promesse * 100).toFixed(0) + '%', xs(i), ys(p.promesse) - 8);
-  });
-  $('cadrageLegende').innerHTML =
-    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> meilleure promesse par taille de pool</span>` +
-    `<span class="lg"><i class="sw" style="background:#dc2626"></i> usure dépassée</span>` +
-    `<span class="lg-note">À cap SFD = ${(CAP.val * 100).toFixed(0)}% du pot. Axe X = taille du pool M. ${Object.entries(r.capMin).map(([c, v]) => `Cible ${(+c * 100).toFixed(0)}% : ${v == null ? 'hors d\'atteinte ici' : 'cap min ' + (v * 100).toFixed(0) + '%'}`).join(' · ')}</span>`;
+// TABLEAU CROISÉ c × M (au cap choisi) : chaque case = meilleure promesse pour ce couple (c, M),
+// (meilleure config sur les autres leviers). Couleur selon promesse ; grisé si usure dépassée.
+function renderCroise(r) {
+  if (!r.rows || !r.rows.length) { $('cadrageCroise').innerHTML = '<p class="muted">Lancez l\'optimisation.</p>'; return; }
+  const cs = [...new Set(r.rows.map(x => x.c))].sort((a, b) => a - b);
+  const Ms = [...new Set(r.rows.map(x => x.M))].sort((a, b) => a - b);
+  // pour chaque (c, M) : meilleure config (promesse max parmi usureOk ; sinon promesse max)
+  const cell = (c, M) => {
+    const sub = r.rows.filter(x => x.c === c && x.M === M);
+    if (!sub.length) return null;
+    const ok = sub.filter(x => x.usureOk);
+    return (ok.length ? ok : sub).sort((a, b) => b.promesse - a.promesse)[0];
+  };
+  const head = `<tr><th>c \\ M</th>${Ms.map(M => `<th>M=${M}</th>`).join('')}</tr>`;
+  const body = cs.map(c => `<tr><td>${fmtM(c)}</td>${Ms.map(M => {
+    const x = cell(c, M);
+    if (!x) return '<td>—</td>';
+    const cls = !x.usureOk ? 'cx-gris' : x.promesse >= 0.99 ? 'cx-ok' : x.promesse >= 0.95 ? 'cx-moy' : 'cx-bas';
+    return `<td class="cx ${cls}" title="${!x.usureOk ? 'usure ' + (x.usure * 100).toFixed(0) + '% > 24%' : 'perte sèche ' + fmtM(x.residuel)}">${(x.promesse * 100).toFixed(0)}%</td>`;
+  }).join('')}</tr>`).join('');
+  $('cadrageCroise').innerHTML = `<table class="data croise">${head}${body}</table>
+    <p class="cadrage-note">Promesse par couple (c, M) au cap ${(CAP.val * 100).toFixed(0)}%. Grisé = seuil d'usure dépassé. Survolez une case pour la perte sèche.</p>`;
 }
+
+// LECTURE INVERSÉE : on fixe deux leviers, on résout le troisième (perte sèche min, promesse cible tenue).
+function initResoudre() {
+  $('cadrageResoudreCard').hidden = false;
+  ['res_levier', 'res_M', 'res_c', 'res_d'].forEach(id => { const el = $(id); if (el && !el._wired) { el._wired = true; el.addEventListener('input', majResoudre); } });
+  majResoudre();
+}
+function majResoudre() {
+  const r = dernierCadrage; if (!r) return;
+  const levier = $('res_levier').value;   // 'cs' | 'Ms' | 'durees'
+  const M = +$('res_M').value, c = +$('res_c').value, d = +$('res_d').value;
+  $('res_M_out').textContent = M; $('res_c_out').textContent = fmtB(c, 'k'); $('res_d_out').textContent = d;
+  // masquer le curseur du levier qu'on résout
+  $('res_M_wrap').style.opacity = levier === 'Ms' ? .35 : 1;
+  $('res_c_wrap').style.opacity = levier === 'cs' ? .35 : 1;
+  $('res_d_wrap').style.opacity = levier === 'durees' ? .35 : 1;
+  const cible = +$('cibleSlider').value;
+  // candidats : on fixe les deux leviers NON résolus (au plus proche disponible dans la grille)
+  const near = (vals, v) => vals.reduce((b, x) => Math.abs(x - v) < Math.abs(b - v) ? x : b, vals[0]);
+  const csG = [...new Set(r.rows.map(x => x.c))], MsG = [...new Set(r.rows.map(x => x.M))], dsG = [...new Set(r.rows.map(x => x.duree))];
+  let sub = r.rows.slice();
+  if (levier !== 'Ms') sub = sub.filter(x => x.M === near(MsG, M));
+  if (levier !== 'cs') sub = sub.filter(x => x.c === near(csG, c));
+  if (levier !== 'durees') sub = sub.filter(x => x.duree === near(dsG, d));
+  const ok = sub.filter(x => x.usureOk && x.promesse >= cible).sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse);
+  const nomLevier = levier === 'cs' ? 'cotisation' : levier === 'Ms' ? 'taille M' : 'durée';
+  if (!ok.length) { $('cadrageResoudre').innerHTML = `<p class="muted">Aucune valeur de ${nomLevier} ne tient ${(cible * 100).toFixed(0)}% (usure OK) avec ces réglages. Baissez la cible ou élargissez la bande de ${nomLevier}.</p>`; return; }
+  const best = ok[0];
+  const val = levier === 'cs' ? fmtM(best.c) : levier === 'Ms' ? best.M : best.duree + ' cycle(s)';
+  $('cadrageResoudre').innerHTML = `<p class="resoudre-reponse">Optimal : <b>${nomLevier} = ${val}</b></p>` + cfgCard(`Vu cap ${(CAP.val * 100).toFixed(0)}% + les leviers fixés`, best);
+}
+$('res_levier') && $('res_levier').addEventListener('change', majResoudre);
 
 function renderCadrageTable(r) {
   // triées par perte sèche croissante (objectif), parmi celles qui respectent l'usure

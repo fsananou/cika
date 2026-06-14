@@ -135,6 +135,23 @@ table.data td.num{font-weight:600}
 .cadrage-cible output{color:var(--acc);font-size:12px;margin-left:6px}
 .cadrage-cible input[type=range]{width:100%;max-width:320px;accent-color:var(--acc);display:block;margin-top:4px}
 
+/* lecture inversée (résoudre un levier) */
+.resoudre-ctrls{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+.resoudre-ctrls label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.resoudre-ctrls select{font-family:inherit;font-size:12px;border:1px solid var(--line);border-radius:6px;padding:5px;background:#fff;color:var(--ink)}
+.resoudre-ctrls input[type=range]{accent-color:var(--acc);vertical-align:middle;width:120px}
+.resoudre-ctrls output{font-weight:700;font-size:12px;color:var(--acc);margin-left:6px;font-variant-numeric:tabular-nums}
+.resoudre-reponse{font-size:14px;margin-bottom:10px}.resoudre-reponse b{color:var(--acc)}
+
+/* tableau croisé c × M */
+table.croise{font-size:12px}
+table.croise th{text-align:center;padding:6px 10px;font-size:10px}
+table.croise th:first-child,table.croise td:first-child{text-align:left;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums}
+table.croise td{text-align:center;padding:0}
+table.croise td.cx{font-weight:700;font-variant-numeric:tabular-nums;color:#fff;cursor:default}
+.cx-ok{background:#059669}.cx-moy{background:#f59e0b}.cx-bas{background:#dc2626}
+.cx-gris{background:var(--line-soft);color:var(--g400);font-weight:400}
+
 /* ---- page Flux ---- */
 .flux-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:18px}
 .flux-titre{font-size:14px;font-weight:700}
