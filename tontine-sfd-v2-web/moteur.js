@@ -126,7 +126,7 @@ export function simulerRun(p, graine) {
   function pref() { const r = rng(); if (r < p.part_urgent) return ["urgent", p.urg_urgent]; if (r < p.part_urgent + p.part_modere) return ["modere", p.urg_modere]; return ["epargnant", p.urg_epargnant]; }
   // seuil emprunteurs / épargnants : N/2 + x
   const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
-  const rDepotMensuel = (p.r_depot_annuel || 0) / 12;
+  const rDepotMensuel = Math.pow(1 + (p.r_depot_annuel || 0), 1 / 12) - 1;  // mensualisation composée
   const pools = []; const comptes = [];
   for (let pid = 0; pid < nPools; pid++) {
     const membres = poolsIdx[pid].map((gi, i) => {
@@ -400,7 +400,7 @@ export function journalPool(p, graine) {
   let fge = 0, trancheUtil = 0, nRempl = 0;
   const etatZ = {};
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
-  const rDepotMensuel = (p.r_depot_annuel || 0) / 12;
+  const rDepotMensuel = Math.pow(1 + (p.r_depot_annuel || 0), 1 / 12) - 1;  // mensualisation composée
   const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
 
   const tours = []; // { tour, cycle, slot, phase, mouvements:[{acteur,type,libelle,montant,depot,fge}] }
@@ -646,6 +646,7 @@ export function cadrageRisque(base, opts = {}) {
   const durees = arrOr(opts.durees, base.n_cycles);
   const partsSurs = arrOr(opts.partsSurs, base.part_eligibles_enchere);
   const partsEpargnant = arrOr(opts.partsEpargnant, base.part_epargnant);
+  const rDepots = arrOr(opts.rDepots, base.r_depot_annuel);
   const runs = opts.runs || 300;
   const cibles = Array.isArray(opts.cibles) ? opts.cibles : [];
   // cap par défaut si non fourni : on dérive le fracPot du cap_sfd_cotisations de base sur M de base.
@@ -653,7 +654,7 @@ export function cadrageRisque(base, opts = {}) {
   const capsEff = caps.map(x => x === null ? capDefaut : x);
 
   const MAX_COMBOS = 2000;
-  const total = capsEff.length * Ms.length * cs.length * durees.length * partsSurs.length * partsEpargnant.length;
+  const total = capsEff.length * Ms.length * cs.length * durees.length * partsSurs.length * partsEpargnant.length * rDepots.length;
   let tronque = false;
   let budget = total;
   if (total > MAX_COMBOS) { tronque = true; budget = MAX_COMBOS; }
@@ -667,26 +668,29 @@ export function cadrageRisque(base, opts = {}) {
         for (const duree of durees) {
           for (const partSurs of partsSurs) {
             for (const partEparg of partsEpargnant) {
-              if (nFaites >= budget) break outer;
-              nFaites++;
-              const capCotis = cap * (M - 1);
-              const cfg = { ...base, n_pools: 1, m_membres: M, c, n_cycles: duree,
-                            part_eligibles_enchere: partSurs, part_epargnant: partEparg,
-                            cap_sfd_cotisations: capCotis };
-              try {
-                const res = monteCarlo(cfg, runs, 12345);
-                const usure = tauxUsureConfig(res, cfg);
-                rows.push({
-                  capPot: cap, capCotis, M, c, duree, partSurs, partEparg,
-                  promesse: res.taux_continuite_pool,
-                  residuel: res.residuel.moy,
-                  perteSfd: res.perteSfd.moy,
-                  pnlPool: res.margePool.moy,
-                  usure,
-                  usureOk: usure <= base.taux_usure_annuel,
-                });
-              } catch (e) {
-                // combinaison instable : on la saute sans casser le grid.
+              for (const rDepot of rDepots) {
+                if (nFaites >= budget) break outer;
+                nFaites++;
+                const capCotis = cap * (M - 1);
+                const cfg = { ...base, n_pools: 1, m_membres: M, c, n_cycles: duree,
+                              part_eligibles_enchere: partSurs, part_epargnant: partEparg,
+                              r_depot_annuel: rDepot, cap_sfd_cotisations: capCotis };
+                try {
+                  const res = monteCarlo(cfg, runs, 12345);
+                  const usure = tauxUsureConfig(res, cfg);
+                  rows.push({
+                    capPot: cap, capCotis, M, c, duree, partSurs, partEparg, rDepot,
+                    promesse: res.taux_continuite_pool,
+                    residuel: res.residuel.moy,
+                    perteSfd: res.perteSfd.moy,
+                    pnlPool: res.margePool.moy,
+                    remunEparg: res.remunParEpargnant.moy,
+                    usure,
+                    usureOk: usure <= base.taux_usure_annuel,
+                  });
+                } catch (e) {
+                  // combinaison instable : on la saute sans casser le grid.
+                }
               }
             }
           }

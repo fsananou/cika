@@ -40,7 +40,7 @@ const SCHEMA = [
     { k: 'x_tours_emprunteurs', nom: 'Décalage x (tours emprunteurs)', d: "Nombre de tours empruntables = N/2 + x. Plus haut = plus d'emprunteurs, plus de revenu, moins d'épargnants.", t: 'range', min: -3, max: 4, step: 1 },
     { k: 'part_emprunteurs_declares', nom: 'Part candidats-emprunteurs', d: "Part de membres qui déclarent vouloir emprunter ET sont jugés fiables (accès précoce).", t: 'range', min: 0.2, max: 0.9, step: 0.05, fmt: 'pct' },
     { k: 'part_bids_aux_epargnants', nom: 'Part des bids aux épargnants', d: "Fraction du surplus d'enchères reversée aux épargnants (leur rémunération).", t: 'range', min: 0, max: 0.8, step: 0.05, fmt: 'pct' },
-    { k: 'r_depot_annuel', nom: 'Rémunération des dépôts', d: "Taux annuel que la SFD verse sur les dépôts (rémunère l'épargne).", t: 'range', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
+    { k: 'r_depot_annuel', nom: 'Rémunération des dépôts', d: "Taux ANNUEL que la SFD verse sur les dépôts, mensualisé en composé ((1+r)^(1/12)−1). Rémunère l'épargne déjà déposée (pas l'argent du mois courant).", t: 'range', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
   ]},
   { grp: 'Produit & mécanisme', desc: "Type de tontine et structure du coût.", items: [
     { k: 'mode', nom: 'Type de tontine', d: "Nue : sans garantie ni frais. Garantie : prime + couverture.", t: 'mode' },
@@ -316,15 +316,27 @@ $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux();
 // ---- page CADRAGE DU RISQUE (optimiseur multi-leviers, bandes min–max) ----
 // Chaque levier se règle en PLAGE (min–max + pas auto). L'optimiseur balaie toutes les
 // combinaisons et cherche la meilleure structure respectant le cap SFD + l'usure UEMOA.
+// Le CAP SFD est une CONTRAINTE à valeur unique (curseur simple, géré à part).
+// Les autres leviers — dont la cotisation c — sont balayés en bandes min–max.
 const BANDES = [
-  { k: 'caps',       nom: 'Cap SFD (% du pot)',   hint: 'skin in the game', min: 0,   max: 0.50, pas: 0.05, lo: 0.05, hi: 0.25, fmt: 'pct' },
-  { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,   max: 20,   pas: 1,    lo: 6,    hi: 12,   fmt: 'int' },
-  { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,   max: 4,    pas: 1,    lo: 1,    hi: 2,    fmt: 'int' },
-  { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2, max: 1,    pas: 0.05, lo: 0.55, hi: 0.85, fmt: 'pct' },
-  { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1, max: 0.6,  pas: 0.05, lo: 0.30, hi: 0.30, fmt: 'pct' },
+  { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,    max: 20,     pas: 1,     lo: 6,     hi: 12,     fmt: 'int' },
+  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 5000, max: 200000, pas: 5000,  lo: 25000, hi: 100000, fmt: 'k' },
+  { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,    max: 4,      pas: 1,     lo: 1,     hi: 2,      fmt: 'int' },
+  { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2,  max: 1,      pas: 0.05,  lo: 0.55,  hi: 0.85,   fmt: 'pct' },
+  { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
+  { k: 'rDepots',    nom: 'Rémunération dépôts',   hint: 'annuel, mensualisé', min: 0,  max: 0.10,   pas: 0.01,  lo: 0.05,  hi: 0.05,   fmt: 'pct' },
 ];
-const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : '' + v;
-function rangeVals(b) { const out = []; for (let v = b.lo; v <= b.hi + 1e-9; v += b.pas) out.push(+v.toFixed(4)); return out.length ? out : [b.lo]; }
+const CAP = { min: 0.02, max: 0.50, pas: 0.01, val: 0.15 };   // cap SFD unique (% du pot)
+const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? Math.round(v / 1000) + 'k' : '' + v;
+// valeurs balayées sur [lo,hi] au pas b.pas, mais bornées à MAX_PTS (échantillonnage régulier)
+const MAX_PTS = 8;
+function rangeVals(b) {
+  const brut = []; for (let v = b.lo; v <= b.hi + 1e-9; v += b.pas) brut.push(+v.toFixed(4));
+  if (!brut.length) return [b.lo];
+  if (brut.length <= MAX_PTS) return brut;
+  const out = []; for (let i = 0; i < MAX_PTS; i++) out.push(brut[Math.round(i * (brut.length - 1) / (MAX_PTS - 1))]);
+  return [...new Set(out)];
+}
 
 function bandeRow(b) {
   return `<div class="bande" data-k="${b.k}">
@@ -344,14 +356,21 @@ function syncBande(b) {
 let cadrageRendu = false;
 function renderCadrageCtrls() {
   if (cadrageRendu) return; cadrageRendu = true;
-  $('cadrageBandes').innerHTML = BANDES.map(bandeRow).join('');
+  // curseur CAP unique (la contrainte) + les bandes des autres leviers
+  const capRow = `<div class="bande cap-unique">
+    <div class="bande-tete"><span class="bande-nom">Cap SFD (% du pot)</span><span class="bande-hint">skin in the game — contrainte</span><span class="bande-val" id="bv_cap"></span></div>
+    <input type="range" id="cap_slider" min="${CAP.min}" max="${CAP.max}" step="${CAP.pas}" value="${CAP.val}" style="width:100%;accent-color:var(--acc)"></div>`;
+  $('cadrageBandes').innerHTML = capRow + BANDES.map(bandeRow).join('');
+  $('cap_slider').addEventListener('input', e => { CAP.val = +e.target.value; $('bv_cap').textContent = Math.round(CAP.val * 100) + '%'; });
+  $('bv_cap').textContent = Math.round(CAP.val * 100) + '%';
   BANDES.forEach(b => {
     ['blo_', 'bhi_'].forEach(pre => $(pre + b.k).addEventListener('input', () => { syncBande(b); }));
     syncBande(b);
   });
 }
 $('btnCadrageReset').addEventListener('click', () => {
-  const def = { caps: [0.05, 0.25], Ms: [6, 12], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30] };
+  CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
+  const def = { Ms: [6, 12], cs: [25000, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
   BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
 });
 
@@ -359,7 +378,7 @@ let dernierCadrage = null;
 function lancerCadrage() {
   $('btnCadrage').textContent = 'Calcul…'; $('cadrageStatus').textContent = '';
   setTimeout(() => {
-    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99] };
+    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99], caps: [CAP.val] };  // cap SFD = contrainte unique
     BANDES.forEach(b => { opts[b.k] = rangeVals(b); });
     const r = cadrageRisque({ ...PARAMS }, opts);
     dernierCadrage = r;
@@ -387,8 +406,10 @@ function cfgCard(titre, x) {
       <div class="cfg-kpi"><span class="lbl">Promesse / pool</span><span class="val ${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span></div>
       <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${(x.capPot * 100).toFixed(0)}% du pot</span></div>
       <div class="cfg-kpi"><span class="lbl">Taille M</span><span class="val">${x.M}</span></div>
+      <div class="cfg-kpi"><span class="lbl">Cotisation</span><span class="val">${fmtM(x.c)}</span></div>
       <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cycle${x.duree > 1 ? 's' : ''}</span></div>
       <div class="cfg-kpi"><span class="lbl">Profils sûrs</span><span class="val">${(x.partSurs * 100).toFixed(0)}%</span></div>
+      <div class="cfg-kpi"><span class="lbl">Rémun. dépôts</span><span class="val">${(x.rDepot * 100).toFixed(0)}%</span></div>
       <div class="cfg-kpi"><span class="lbl">Usure (≤24%)</span><span class="val ${x.usure <= 0.24 ? 'ok' : 'bad'}">${(x.usure * 100).toFixed(1)}%</span></div>
     </div>`;
 }
@@ -404,35 +425,44 @@ function majCible() {
 }
 $('cibleSlider').addEventListener('input', majCible);
 
+// cap unique -> on trace la PROMESSE selon la taille du pool M (meilleure config par M),
+// pour montrer quelle structure tient le mieux au cap demandé.
 function drawCadrage(r) {
   const cv = $('cadrageCanvas'); if (!cv) return;
   const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
-  const pts = r.pareto; if (!pts || !pts.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Lancez le cadrage pour voir la frontière.', 16, H / 2); $('cadrageLegende').innerHTML = ''; return; }
+  if (!r.rows || !r.rows.length) { ctx.fillStyle = '#9ca3af'; ctx.font = '12px Inter,sans-serif'; ctx.fillText('Lancez l\'optimisation pour voir le graphe.', 16, H / 2); $('cadrageLegende').innerHTML = ''; return; }
+  // meilleure config (promesse max, usure OK prioritaire) par valeur de M
+  const parM = new Map();
+  for (const x of r.rows) {
+    const cur = parM.get(x.M);
+    const meilleur = !cur || (x.usureOk && !cur.usureOk) || ((x.usureOk === cur.usureOk) && x.promesse > cur.promesse);
+    if (meilleur) parM.set(x.M, x);
+  }
+  const pts = [...parM.values()].sort((a, b) => a.M - b.M);
   const padL = 48, padR = 14, padB = 28, padT = 14, plotW = W - padL - padR, plotH = H - padB - padT;
   const xs = i => padL + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
-  const ys = v => padT + plotH - v * plotH;            // promesse 0..1
+  const ys = v => padT + plotH - v * plotH;
   ctx.strokeStyle = '#f3f4f6'; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.textAlign = 'right';
   for (let g = 0; g <= 4; g++) { const yy = padT + (g / 4) * plotH, val = 1 - g / 4; ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText((val * 100).toFixed(0) + '%', padL - 6, yy + 3); }
-  // ligne promesse
   ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
   pts.forEach((p, i) => i ? ctx.lineTo(xs(i), ys(p.promesse)) : ctx.moveTo(xs(i), ys(p.promesse))); ctx.stroke();
   pts.forEach((p, i) => {
     ctx.fillStyle = p.usureOk ? '#0f4c4a' : '#dc2626'; ctx.beginPath(); ctx.arc(xs(i), ys(p.promesse), 3.5, 0, 7); ctx.fill();
     ctx.fillStyle = '#6b7280'; ctx.textAlign = 'center'; ctx.font = '10px Inter,sans-serif';
-    ctx.fillText((p.capPot * 100).toFixed(0) + '%', xs(i), H - 9);
-    ctx.fillText('M' + p.M, xs(i), ys(p.promesse) - 8);
+    ctx.fillText('M' + p.M, xs(i), H - 9);
+    ctx.fillText((p.promesse * 100).toFixed(0) + '%', xs(i), ys(p.promesse) - 8);
   });
   $('cadrageLegende').innerHTML =
-    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> promesse atteignable (meilleure config par cap)</span>` +
+    `<span class="lg"><i class="sw line" style="background:#0f4c4a"></i> meilleure promesse par taille de pool</span>` +
     `<span class="lg"><i class="sw" style="background:#dc2626"></i> usure dépassée</span>` +
-    `<span class="lg-note">Axe X = cap SFD demandé (% du pot). Étiquette = M optimal. ${Object.entries(r.capMin).map(([c, v]) => `Cible ${(+c * 100).toFixed(0)}% : ${v == null ? 'hors d\'atteinte' : 'cap min ' + (v * 100).toFixed(0) + '%'}`).join(' · ')}</span>`;
+    `<span class="lg-note">À cap SFD = ${(CAP.val * 100).toFixed(0)}% du pot. Axe X = taille du pool M. ${Object.entries(r.capMin).map(([c, v]) => `Cible ${(+c * 100).toFixed(0)}% : ${v == null ? 'hors d\'atteinte ici' : 'cap min ' + (v * 100).toFixed(0) + '%'}`).join(' · ')}</span>`;
 }
 
 function renderCadrageTable(r) {
   const top = r.rows.slice().filter(x => x.usureOk).sort((a, b) => b.promesse - a.promesse).slice(0, 12);
   if (!top.length) { $('cadrageTable').innerHTML = '<p class="muted">Aucune configuration ne respecte le seuil d\'usure sur cette grille.</p>'; return; }
-  const tb = top.map(x => `<tr><td>${(x.capPot * 100).toFixed(0)}%</td><td>${x.M}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
-  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Cap SFD</th><th>M</th><th>Sûrs</th><th>Cycles</th><th>Promesse/pool</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
+  const tb = top.map(x => `<tr><td>${(x.capPot * 100).toFixed(0)}%</td><td>${x.M}</td><td>${fmtM(x.c)}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td>${(x.rDepot * 100).toFixed(0)}%</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
+  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Cap SFD</th><th>M</th><th>Cotis.</th><th>Sûrs</th><th>Cycles</th><th>Rém.dép.</th><th>Promesse/pool</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
 }
 
 // ---- init ----
