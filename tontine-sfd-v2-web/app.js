@@ -320,7 +320,7 @@ $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux();
 // Les autres leviers — dont la cotisation c — sont balayés en bandes min–max.
 const BANDES = [
   { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,    max: 20,     pas: 1,     lo: 6,     hi: 12,     fmt: 'int' },
-  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 1000, max: 100000, pas: 1000,  lo: 1000,  hi: 100000, fmt: 'k' },
+  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 1,    max: 100000, pas: 1,     lo: 1,     hi: 100000, fmt: 'k' },
   { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,    max: 4,      pas: 1,     lo: 1,     hi: 2,      fmt: 'int' },
   { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2,  max: 1,      pas: 0.05,  lo: 0.55,  hi: 0.85,   fmt: 'pct' },
   { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
@@ -328,7 +328,7 @@ const BANDES = [
 ];
 // CAP SFD = % du pot (contrainte simple, bornée). On affiche l'équivalent absolu par config.
 const CAP = { min: 0.02, max: 0.50, pas: 0.01, val: 0.15 };
-const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : Math.round(v / 1000) + 'k') : '' + v;
+const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1000 ? Math.round(v / 1000) + 'k' : '' + v) : '' + v;
 // valeurs balayées sur [lo,hi] au pas b.pas, mais bornées à MAX_PTS (échantillonnage régulier)
 const MAX_PTS = 8;
 function rangeVals(b) {
@@ -371,7 +371,7 @@ function renderCadrageCtrls() {
 }
 $('btnCadrageReset').addEventListener('click', () => {
   CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
-  const def = { Ms: [6, 12], cs: [1000, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
+  const def = { Ms: [6, 12], cs: [1, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
   BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
 });
 
