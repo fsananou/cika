@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Simulateur</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<nav class="topbar">
+  <div class="wrap topbar-in">
+    <div class="topbar-id">
+      <span class="topbar-titre">Simulateur</span>
+    </div>
+    <div class="seg" id="ongletSeg">
+      <button class="seg-btn active" data-onglet="parametres">Exploration</button>
+      <button class="seg-btn" data-onglet="cadrage">Optimisation</button>
+      <button class="seg-btn" data-onglet="resultats">Résultats</button>
+      <button class="seg-btn" data-onglet="flux">Flux</button>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ ONGLET EXPLORATION (tous les leviers libres + lancement) ============ -->
+<main id="vue-parametres">
+  <section class="wrap">
+    <div id="exploBandeau" class="explo-bandeau" hidden>
+      <span id="exploBandeauTxt"></span>
+      <button id="exploBandeauX" class="explo-bandeau-x" title="Fermer">×</button>
+    </div>
+    <p class="flux-sub" style="margin-bottom:14px">Réglez librement chaque levier (structure, comportement, stress, couverture), puis lancez la simulation. Tous les paramètres sont des entrées libres — pour une recherche automatique de la meilleure structure par segment, voyez l'onglet <b>Optimisation</b>.</p>
+    <div id="paramGroupes" class="param-cols"></div>
+
+    <div class="card" style="margin-top:24px">
+      <h3>Lancement <span class="hint">choisissez un scénario de stress, réglez la précision, puis lancez</span></h3>
+      <div class="preset-row" style="margin-top:4px">
+        <div>
+          <h3>Scénario</h3>
+          <div class="seg" id="presetSeg">
+            <button class="seg-btn active" data-preset="nominal">Nominal</button>
+            <button class="seg-btn" data-preset="comportemental">Stress comportemental</button>
+            <button class="seg-btn" data-preset="macro">Stress macro</button>
+            <button class="seg-btn" data-preset="combine">Combiné</button>
+            <button class="seg-btn" data-preset="bids_faibles">Peu d'enchères</button>
+          </div>
+        </div>
+        <div class="preset-actions">
+          <label class="runs-label">Précision (runs) : <output id="o_runs"></output><input type="range" id="c_runs" min="40" max="300" step="40"></label>
+          <div class="run-actions">
+            <button id="btnRun" class="btn big">Lancer la simulation</button>
+            <button id="btnReset" class="btn ghost">Défaut</button>
+          </div>
+          <span class="param-status" id="simStatus"></span>
+        </div>
+      </div>
+      <div id="exploGardeFous" class="garde-fous" hidden></div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ ONGLET OPTIMISATION (recherche de la config optimale par segment) ============ -->
+<main id="vue-cadrage" hidden>
+  <section class="wrap">
+    <div class="card">
+      <h3>Optimisation par segment</h3>
+      <p class="flux-sub">Pour chaque <b>segment</b> de population (caractérisé par son taux de fuite), l'optimiseur balaie une grille de structures (taille M, décalage x, durée, sévérité du scoring) et retient celle qui <b>maximise le P&amp;L net par pool</b> sous les contraintes : promesse ≥ 99 %, usure ≤ 24 %, perte résiduelle / pot ≤ 0,5 %. Il calcule aussi la <b>robustesse</b> (taux de fuite de rupture, marge de sécurité) et propose une config <b>recommandée</b> (marge ≥ 50 %). Optimisez un segment à la fois (≈ 15 s chacun).</p>
+    </div>
+
+    <details class="card opt-espace">
+      <summary>Espace de recherche &amp; paramètres SFD <span class="hint">optionnel — sinon valeurs par défaut du moteur</span></summary>
+      <div id="optEspace" class="opt-espace-grid"></div>
+    </details>
+
+    <div id="segCards" class="seg-cards"></div>
+  </section>
+</main>
+
+<!-- ============ ONGLET RÉSULTATS (tous les chiffres + graphes) ============ -->
+<main id="vue-resultats" hidden>
+  <section class="wrap">
+    <div class="kpi-grid" id="kpiGrid"></div>
+
+    <div class="card">
+      <h3>Comparaison des scénarios <span class="hint">tout est ramené à un pool</span></h3>
+      <div id="tableauScen" class="table-wrap"></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h3>Coût du membre par tour <span class="hint">décomposé · le dernier tour ≈ 0</span></h3>
+        <div id="coutDecompo" class="table-wrap"></div>
+      </div>
+      <div class="card">
+        <h3>Flux de la SFD <span class="hint">avances, intérêts, couverture</span></h3>
+        <div id="fluxSfd" class="table-wrap"></div>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <h3>Distribution du P&L brut <span class="hint">sur tous les runs</span></h3>
+      <canvas id="pnlCanvas" width="1020" height="190"></canvas>
+    </div>
+  </section>
+</main>
+
+<!-- ============ ONGLET FLUX (déroulé des mouvements d'un pool) ============ -->
+<main id="vue-flux" hidden>
+  <section class="wrap">
+    <div class="card chart-card">
+      <h3>Pourquoi filtrer l'accès aux enchères au cycle 1</h3>
+      <p class="flux-sub">Au premier cycle, le FGE part de zéro : une fuite précoce n'est presque pas couverte. Le <b>filtre par score</b> réserve les premiers tours aux meilleurs profils, qui fuient moins — on évite donc les fuites coûteuses tant que le fonds se constitue. Le graphe compare le <b>résiduel par pool</b> (perte non couverte) <b>avec</b> et <b>sans</b> filtre, à différents taux de fuite.</p>
+      <canvas id="vulnCanvas" width="1020" height="220"></canvas>
+      <div id="vulnLegende" class="vuln-legende"></div>
+    </div>
+
+    <div class="flux-head">
+      <div>
+        <h3 class="flux-titre">Déroulé d'un pool, tour par tour</h3>
+        <p class="flux-sub" id="fluxResume"></p>
+      </div>
+      <button id="btnFluxReroll" class="btn ghost">Autre tirage</button>
+    </div>
+    <div id="fluxJournal"></div>
+  </section>
+</main>
+
+<script type="module" src="app.js?v=20"></script>
+</body>
+</html>
