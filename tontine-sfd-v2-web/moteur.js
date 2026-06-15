@@ -32,8 +32,10 @@ export const DEFAUTS = {
   // MODÈLE À DEUX POPULATIONS : les premiers tours (N/2 + x) sont aux enchères (EMPRUNTEURS),
   // les suivants sont des ÉPARGNANTS servis dans l'ordre aléatoire, depuis le dépôt, rémunérés.
   deux_populations: true,
+  // tours emprunteurs = round(M/2) + x. x est CLAMPÉ par boundsX(M) dans simulerRun pour
+  // garantir au moins 1 emprunteur ET 1 épargnant : x ∈ [-round(M/2)+1, round(M/2)].
   x_tours_emprunteurs: 0,        // décalage par rapport à N/2 (0 = moitié/moitié)
-  part_emprunteurs_declares: 0.55, // part de membres qui DÉCLARENT vouloir emprunter (accès précoce)
+  part_emprunteurs_declares: 0.55, // part de membres qui DÉCLARENT vouloir emprunter (DEMANDE de crédit)
   // rémunération des épargnants (puisée dans le surplus de bids + intérêts sur dépôts)
   part_bids_aux_epargnants: 0.40, // part des surplus de bids reversée aux épargnants
   r_depot_annuel: 0.05,          // intérêt que la SFD verse sur les dépôts (rémunère l'épargne)
@@ -43,8 +45,14 @@ export const DEFAUTS = {
   // fuite
   p_fuite_base: 0.06, fuite_mult_tour_precoce: 1.8, charge_z_fuite: 0.35,
   taux_echec_friction: 0.03, prelevement_auto_efficacite: 0.7,
-  // arrêt d'un membre NON encaisseur (cas 2) : remboursé + remplaçant rattrape. Off par défaut.
-  taux_arret_non_encaisseur: 0,
+  // ARRÊT d'un membre NON encaisseur (cas 2, règle 5) : DISTINCT de la fuite. Proba MENSUELLE
+  // qu'un membre n'ayant pas encore encaissé arrête. Il n'a rien reçu -> AUCUN trou sur les
+  // avances ; son slot est marqué vacant et remplacé via la liste d'attente (A3).
+  taux_arret_non_encaisseur: 0.01,
+  // LISTE D'ATTENTE (règle 3) : R remplaçants scorés par pool. Une fuite/arrêt au mois t -> le
+  // PROCHAIN remplaçant dispo entre au mois t+1, prend le PROCHAIN slot libre (pas celui du
+  // fuyard), cotise dès t+1, sans droit aux tours passés. Liste épuisée = pas de remplacement.
+  n_remplacants: 3,
   // couverture (3 étages)
   mitigation_active: true, acces_sequence_active: true, t_restreint: 3, part_avec_historique: 0.50,
   garantie_enchere_active: true, g_cotisations: 1,
@@ -58,24 +66,47 @@ export const DEFAUTS = {
   // true = mutualisés entre tous les pools (un pool sain peut renflouer un pool en fuite).
   fge_mutualise: false,
   // CYCLE 1 (règles internes) : les premiers tours sont réservés aux profils « éligibles enchère »
-  // (bons scores), qui fuient moins. Le seul levier exposé est la PART de tels profils, calibrée
-  // pour qu'il y ait toujours qui enchérir. Les seuils et la réduction de fuite sont internes.
-  part_eligibles_enchere: 0.55,  // part des candidats-emprunteurs au profil « sûr » (éligible enchère)
+  // (bons scores), qui fuient moins. Les seuils et la réduction de fuite sont internes.
+  // SÉVÉRITÉ DU SCORING — part_eligibles_enchere est l'OFFRE de crédit : la fraction du pool que
+  // l'OPÉRATEUR AUTORISE à accéder aux tours emprunteurs. C'est DISTINCT de
+  // part_emprunteurs_declares (la DEMANDE). Un membre est eligibleEnchere ssi il DÉCLARE emprunter
+  // (demande) ET tombe dans la fraction autorisée par le scoring (offre) : eligibleEnchere =
+  // candidatEmp(demande) × tirage<part_eligibles_enchere(offre). Sévérité basse = offre restreinte.
+  part_eligibles_enchere: 0.55,  // OFFRE/sévérité : fraction des candidats-emprunteurs autorisée
   red_fuite_eligible: 0.33,      // les profils sûrs fuient à ce facteur du taux de base (0,33 = 3× moins)
+  // CYCLE 1 — déclenchement de l'enchère (règle 4b) : l'enchère du tour ne s'ouvre que si les
+  // cotisations collectées >= alpha*M*c. Sinon déclenchement FORCÉ sur le solde dispo (pas de gel).
+  // (Le « délai 5 jours » du cadre réel n'est pas simulé en pas mensuel.)
+  alpha_declenchement: 0.8,
+  // CYCLE 1 — FGE pré-alimenté (règle 4c) : chaque emprunteur déclaré verse 1*c en prime de
+  // démarrage, créditée au FGE AVANT le tour 1.
+  prime_demarrage_actif: true,
   // risque
   pd_base_annuel: 0.08, pd_base_sigma: 0.04,
   secteurs: [["commerce", 0.30, 0.30], ["agriculture", 0.20, 0.45], ["transport", 0.15, 0.25], ["services", 0.20, 0.15], ["artisanat", 0.15, 0.20]],
   // stress
   comportemental_actif: false, choc_fuite: 0.0, bascule_urgents: 0.0,
   macro_actif: false, z_choc: 0.0, z_persistance: 0,
-  // P&L BRUT : on n'inclut aucun coût (acquisition, ops, fixes). Les coûts relèvent de la
-  // structure et du financement, hors du périmètre. Le P&L = revenus bruts du mécanisme.
+  // P&L : on expose le BRUT (revenus du mécanisme) ET le NET (brut − coûts de structure).
+  // Coûts de structure PARAMÉTRABLES, défauts à 0 (P&L net = P&L brut tant que non renseignés) :
+  //  - cout_acquisition_membre : one-shot par membre recruté (KYC, onboarding)
+  //  - cout_ops_pool_mois       : coût opérationnel par pool et par mois (suivi, relances)
+  //  - couts_fixes_mensuels     : frais fixes mensuels du dispositif (structure)
   cout_acquisition_membre: 0, cout_ops_pool_mois: 0, couts_fixes_mensuels: 0, cout_capital_annuel: 0.10,
   // plafond réglementaire BCEAO/UEMOA : le coût du crédit-relais annualisé ne doit pas dépasser ça.
   taux_usure_annuel: 0.24,
 };
 
 const rSfdMensuel = p => p.r_sfd_annuel / 12;
+
+// Bornes admissibles de x (décalage des tours emprunteurs autour de round(M/2)) : garantir au
+// moins 1 emprunteur (x >= -round(M/2)+1) ET au plus M tours emprunteurs (x <= round(M/2)).
+// NB : seuilEmp = round(M/2)+x est en outre clampé à [1, M-1] dans simulerRun pour qu'il reste
+// au moins 1 épargnant (sauf si deux_populations=false où tout le pool emprunte).
+export function boundsX(M) {
+  const h = Math.round(M / 2);
+  return { min: -h + 1, max: h };
+}
 
 // ---- prime de garantie (∝ avance, décroît avec le tour) ----
 export function primeGarantie(avance, duree, p_fuite, dureeMax, facteurPrudence) {
@@ -124,24 +155,39 @@ export function simulerRun(p, graine) {
   const etatZ = {}; const zMois = []; for (let t = 0; t < totalTours; t++) zMois.push(tirerZ(rng, p, etatZ));
 
   function pref() { const r = rng(); if (r < p.part_urgent) return ["urgent", p.urg_urgent]; if (r < p.part_urgent + p.part_modere) return ["modere", p.urg_modere]; return ["epargnant", p.urg_epargnant]; }
-  // seuil emprunteurs / épargnants : N/2 + x
-  const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
+  // seuil emprunteurs / épargnants : round(M/2) + x, x clampé par boundsX(M) (A2). Le seuilEmp est
+  // ensuite borné à [1, m-1] en deux-populations pour qu'il reste au moins 1 emprunteur ET 1 épargnant.
+  const bx = boundsX(m);
+  const xClamp = Math.min(bx.max, Math.max(bx.min, p.x_tours_emprunteurs || 0));
+  const seuilEmp = p.deux_populations
+    ? Math.min(m - 1, Math.max(1, Math.round(m / 2) + xClamp))
+    : m;
   const rDepotMensuel = Math.pow(1 + (p.r_depot_annuel || 0), 1 / 12) - 1;  // mensualisation composée
+  // SCORING CYCLE 1 (A4a) : seuil PD décroissant linéairement de P90 (tour 1) à P50 (tour seuilEmp).
+  // mb.seuil = seuil Vasicek déjà tiré (seuil bas = PD basse = plus fiable). Seuls les membres sous
+  // le seuil PD du tour accèdent à l'enchère de ce tour, au cycle 1.
   const pools = []; const comptes = [];
   for (let pid = 0; pid < nPools; pid++) {
     const membres = poolsIdx[pid].map((gi, i) => {
       const pr = profils[gi]; let [tp, urg] = pref();
       if (p.comportemental_actif && (tp === "modere" || tp === "epargnant") && rng() < p.bascule_urgents) { tp = "urgent"; urg = p.urg_urgent; }
       const aHist = rng() < p.part_avec_historique;
-      // profil déclaré : veut emprunter (accès précoce) OU épargner. + filtre de fiabilité (aHist).
+      // DEMANDE : le membre DÉCLARE vouloir emprunter (accès précoce). + filtre de fiabilité (aHist).
       const declareEmp = rng() < p.part_emprunteurs_declares;
       const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true; // accès phase emprunteurs
-      // RÈGLE INTERNE cycle 1 : une part des candidats a un bon score -> éligible aux enchères des
-      // premiers tours (et fuit moins). La part garantit qu'il y a toujours qui enchérir.
+      // OFFRE × DEMANDE (A1) : eligibleEnchere ssi le membre DÉCLARE emprunter (demande) ET tombe
+      // dans la fraction part_eligibles_enchere que l'OPÉRATEUR AUTORISE (offre/sévérité du scoring).
       const eligibleEnchere = candidatEmp && rng() < p.part_eligibles_enchere;
-      return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, eligibleEnchere, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remun: 0 };
+      return { i, seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist, candidatEmp, eligibleEnchere, declareEmp, estEpargnant: false, aEncaisse: false, tEnc: null, aFui: false, vacant: false, consign: 0, cotise: 0, recu: 0, remun: 0, estRempl: false, filtreScore: false };
     });
-    pools.push(membres); comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0, rompu: false, trou: 0, absorbeSfdPic: 0, absorbeFgePic: 0 });
+    // P90->P50 du seuil PD du pool, pour le scoring d'accès au cycle 1 (A4a)
+    const seuilsTri = membres.map(mb => mb.seuil).slice().sort((a, b) => a - b);
+    pools.push(membres);
+    comptes.push({ prets: [], decaisseCumule: 0, depot: 0, fge: 0, trancheUtil: 0, rompu: false, trou: 0,
+                   absorbeSfdPic: 0, absorbeFgePic: 0, absorbeSfd: 0,
+                   // A3 : liste d'attente — R remplaçants scorés par pool, et entrées différées (t+1).
+                   remplDispo: Math.max(0, p.n_remplacants | 0), entreesEnAttente: [], listeEpuisee: false,
+                   nbRemplacements: 0, seuilsTri });
   }
 
   // FGE et tranche SFD : ISOLÉS par pool (défaut) ou MUTUALISÉS entre pools.
@@ -160,6 +206,8 @@ export function simulerRun(p, graine) {
   let couvertFge = 0, couvertSfd = 0, residuel = 0, perteSfd = 0, nFuites = 0, nGratuits = 0;
   let coutTour1 = 0, continuiteOk = true;
   let remunEpargnants = 0, interetsDepots = 0;
+  // A3 — LOGS remplacement / liste d'attente
+  let nbRemplacements = 0, perteNetteAvantRemplacement = 0, perteNetteApresRemplacement = 0;
   const exposMois = new Array(totalTours).fill(0);
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
 
@@ -170,6 +218,17 @@ export function simulerRun(p, graine) {
   // suivi de la courbe de vulnérabilité du CYCLE 1 (par tour) : expo nette, FGE dispo, vulnérabilité
   const vulnCycle1 = []; // [{tour, expoNette, fgeDispo, vuln, alerte}]
   let tours_fge_insuffisant = 0;
+  let tours_declench_force = 0;       // A4b : tours où collecte < alpha*M*c (déclenchement forcé)
+  let tours_fge_sous_perte_max = 0;   // A4c : décaissements où solde FGE < perte max possible du tour
+
+  // A4c — FGE PRÉ-ALIMENTÉ : chaque emprunteur déclaré verse 1*c en prime de démarrage, créditée
+  // au FGE AVANT le tour 1. On loggera le solde FGE à chaque décaissement (vulnCycle1).
+  if (p.prime_demarrage_actif) {
+    for (let pid = 0; pid < nPools; pid++) {
+      let nEmpDecl = 0; for (const mb of pools[pid]) if (mb.declareEmp) nEmpDecl++;
+      const dem = nEmpDecl * p.c; if (dem > 0) { addFge(pid, dem); fgeProvisions += dem; }
+    }
+  }
 
   for (let t = 1; t <= totalTours; t++) {
     const z = zMois[t - 1], slot = (t - 1) % m;
@@ -177,19 +236,29 @@ export function simulerRun(p, graine) {
 
     for (let pid = 0; pid < nPools; pid++) {
       const membres = pools[pid], cpt = comptes[pid];
-      // 0. REMPLACEMENTS en attente (place vacante depuis le tour précédent) : rattrapage -> dépôt + réactivation.
-      for (const mb of membres) {
-        if (mb.vacant) {
-          const rattrapage = slot * p.c; cpt.depot += rattrapage;
-          mb.aFui = false; mb.vacant = false; mb.aEncaisse = false; mb.tEnc = null; mb.cotise = rattrapage;
-          mb.filtreScore = false; mb.candidatEmp = (mb.remplToType !== 'epargnant'); mb.remplToType = null;
+      // 0. REMPLACEMENTS différés (A3) : une fuite/arrêt au tour t-1 a programmé l'entrée d'un
+      // remplaçant au tour t. Il prend le PROCHAIN slot disponible (pas celui du fuyard), cotise
+      // dès maintenant, SANS droit aux tours passés ni rattrapage. Réutilise un membre marqué vacant.
+      if (cpt.entreesEnAttente.length) {
+        for (const ent of cpt.entreesEnAttente) {
+          const slotVacant = membres.find(mb => mb.vacant);
+          if (!slotVacant) continue;       // pas de place libre (ne devrait pas arriver)
+          slotVacant.vacant = false; slotVacant.aFui = false; slotVacant.aEncaisse = false;
+          slotVacant.tEnc = null; slotVacant.cotise = 0; slotVacant.recu = 0; slotVacant.consign = 0;
+          slotVacant.estEpargnant = false; slotVacant.estRempl = true; slotVacant.filtreScore = false;
+          // remplaçant scoré : pas d'accès enchère au cycle 1 (entre après le démarrage) -> épargnant.
+          slotVacant.candidatEmp = (ent.type === 'emprunteur');
+          slotVacant.declareEmp = (ent.type === 'emprunteur');
+          slotVacant.eligibleEnchere = false;
+          cpt.nbRemplacements++; nbRemplacements++;
         }
+        cpt.entreesEnAttente = [];
       }
-      // 1a. CAS 1 — fuite d'un encaisseur : il part avec le crédit-relais. Son avance non amortie
-      // (pr.restant) cesse d'être recouvrée (pr.actif=false) : elle disparaît des ENGAGEMENTS
-      // recouvrables mais ne reviendra jamais au dépôt -> creuse mécaniquement le DÉFICIT projeté,
-      // que la condition forward-looking (étape 5) capture. Pas d'imputation cascade ici.
-      // La place devient VACANTE, remplacée au tour suivant.
+      const cycle1 = (t <= m); // premier cycle (le scoring P90->P50 ne s'applique qu'ici)
+      // 1a. CAS 1 (A3) — fuite d'un encaisseur : il part avec le crédit-relais (avance non amortie
+      // pr.restant). PERTE NETTE de remplacement = pr.restant − cotisations futures d'un remplaçant
+      // (t+1..vie) + c (gap du mois t), plancher 0. Si liste épuisée : pr.restant + cotis. futures
+      // manquantes (pas de remplacement). Cette perte nette passe dans la cascade FGE->cap SFD->résiduel.
       for (const mb of membres) {
         if (mb.aEncaisse && !mb.aFui && !cpt.rompu) {
           const moisR = Math.max(1, vie - mb.tEnc);
@@ -197,30 +266,46 @@ export function simulerRun(p, graine) {
           const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
           if (rng() < pf) {
             nFuites++;
-            // PERTE = avance non amortie du fuyard (pr.restant). Le crédit-relais est porté par la
-            // SFD : si le membre fuit, elle ne le récupère pas. Absorption FGE -> cap SFD -> rupture.
-            let trou = 0;
-            for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
+            let principalRestant = 0;
+            for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; principalRestant += pr.restant; }
             if (p.garantie_enchere_active && mb.consign > 0) { addFge(pid, mb.consign); fgeSaisies += mb.consign; mb.consign = 0; }
-            // 1) FGE (réserve accumulée des bids) absorbe en premier
+            perteNetteAvantRemplacement += principalRestant;   // perte brute = principal restant
+            // cotisations futures d'un remplaçant entrant à t+1 : c × (vie - t) (mois t+1..vie)
+            const cotisFutures = p.c * Math.max(0, vie - t);
+            let perteNette;
+            const disponible = cpt.remplDispo > 0;
+            if (disponible) {
+              cpt.remplDispo--;
+              // entrée du remplaçant au tour suivant (prend le prochain slot libre)
+              cpt.entreesEnAttente.push({ type: 'epargnant', tEntree: t + 1 });
+              // PERTE NETTE = principal restant − cotisations futures du remplaçant + c (gap mois t)
+              perteNette = Math.max(0, principalRestant - cotisFutures + p.c);
+            } else {
+              cpt.listeEpuisee = true;
+              // liste épuisée : pas de remplacement -> perte = principal + cotisations futures manquantes
+              perteNette = principalRestant + cotisFutures;
+            }
+            perteNetteApresRemplacement += perteNette;
+            // CASCADE sur la perte nette : FGE -> cap SFD -> résiduel (rupture)
+            let trou = perteNette;
             const parFge = p.fge_actif ? Math.min(getFge(pid), trou) : 0; addFge(pid, -parFge); trou -= parFge; couvertFge += parFge;
-            // 2) cap SFD = K cotisations, CUMULÉ sur le pool (skin in the game)
             const capSfd = (p.cap_sfd_cotisations || 0) * p.c;
             const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0));
             const parSfd = Math.min(dispoSfd, trou); cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; trou -= parSfd; couvertSfd += parSfd; perteSfd += parSfd;
-            // 3) au-delà du cap -> RUPTURE du dispositif (promesse cassée), on arrête ce pool
             if (trou > 1e-9) { residuel += trou; continuiteOk = false; comptes[pid].casse = true; cpt.rompu = true; }
-            mb.aFui = true; mb.vacant = true; mb.remplToType = 'epargnant';
+            mb.aFui = true; mb.vacant = true;
           }
         }
       }
-      // 1b. CAS 2 — arrêt d'un non-encaisseur (paramétrable, off par défaut) : remboursé ;
-      // place vacante, remplaçant au tour suivant (avec droit d'enchère).
+      // 1b. CAS 2 (A5) — arrêt d'un NON-encaisseur : DISTINCT de la fuite. Il n'a rien reçu -> AUCUN
+      // trou sur les avances. Remboursé de ses cotisations ; slot vacant, remplacé via la liste (A3).
       if ((p.taux_arret_non_encaisseur || 0) > 0) {
         for (const mb of membres) {
-          if (!mb.aEncaisse && !mb.aFui && !mb.vacant && rng() < p.taux_arret_non_encaisseur) {
+          if (!mb.aEncaisse && !mb.aFui && !mb.vacant && !cpt.rompu && rng() < p.taux_arret_non_encaisseur) {
             cpt.depot = Math.max(0, cpt.depot - mb.cotise);
-            mb.aFui = true; mb.vacant = true; mb.remplToType = 'emprunteur';
+            mb.aFui = true; mb.vacant = true;
+            if (cpt.remplDispo > 0) { cpt.remplDispo--; cpt.entreesEnAttente.push({ type: 'emprunteur', tEntree: t + 1 }); }
+            else cpt.listeEpuisee = true;
           }
         }
       }
@@ -236,9 +321,16 @@ export function simulerRun(p, graine) {
       const dureePret = Math.max(1, m - (slot + 1));
       const phaseEmprunteur = !p.deux_populations || (slot < seuilEmp);
 
+      // A4b — DÉCLENCHEMENT : l'enchère ne s'ouvre que si les cotisations collectées >= alpha*M*c.
+      // Sinon, déclenchement FORCÉ sur le solde disponible (pas de gel). Le « délai 5 jours » du
+      // cadre réel n'est pas simulé en pas mensuel. On loggue mais on n'empêche jamais le service.
+      const seuilDeclench = (p.alpha_declenchement ?? 0.8) * m * p.c;
+      // collecté ce mois (potColl) comme proxy de la collecte du tour. Déclenchement FORCÉ si en deçà :
+      // on sert quand même (le crédit-relais est porté par la SFD, pas par le dépôt), on logge juste.
+      if (phaseEmprunteur && !cpt.rompu && potColl < seuilDeclench) tours_declench_force++;
+
       // 3. attribution + 4. décaissement — sauf si le pool est ROMPU (dispositif arrêté).
       let gagnant = null, bideur = false, bidSurplusWtp = 0;
-      const cycle1 = (t <= m); // premier cycle
       if (cpt.rompu) {
         // pool rompu : on ne sert plus, on ne décaisse plus ; on laisse juste tourner les flux passifs.
       } else if (phaseEmprunteur) {
@@ -247,10 +339,21 @@ export function simulerRun(p, graine) {
         const nonEnc = actifs.filter(mb => !mb.aEncaisse);
         let elig = nonEnc.filter(mb => !p.deux_populations || mb.candidatEmp);
         if (!elig.length) elig = nonEnc;                 // jamais de gel : on attribue toujours
-        // RÈGLE CYCLE 1 : réserver aux profils sûrs tant qu'il en reste (sinon ouvert à tous).
+        // RÈGLE CYCLE 1 (A4a) : accès filtré par scoring décroissant. Seuil PD S_t de P90 (tour 1)
+        // à P50 (tour seuilEmp), décroissant linéairement avec slot. Seuls les membres SOUS le
+        // seuil PD (donc au-dessus en fiabilité) accèdent. Repli anti-gel si le filtre vide la liste.
         const filtreActif = cycle1;
-        if (filtreActif) { const e = elig.filter(mb => mb.eligibleEnchere); if (e.length) elig = e; }
-        // l'enchère se déclenche toujours (pas de seuil de collecte)
+        if (filtreActif) {
+          const tri = cpt.seuilsTri;
+          const denom = Math.max(1, seuilEmp - 1);
+          const frac = Math.min(1, Math.max(0, slot / denom));   // 0 au tour 1 -> 1 au dernier tour emprunteur
+          const qScore = 0.90 - (0.90 - 0.50) * frac;            // P90 -> P50
+          const sCut = quantile(tri, qScore);                    // seuil PD du tour
+          const e = elig.filter(mb => mb.seuil <= sCut + 1e-12);
+          if (e.length) elig = e;
+          else { const e2 = elig.filter(mb => mb.eligibleEnchere); if (e2.length) elig = e2; }
+        }
+        // l'enchère se déclenche toujours (déclenchement forcé sur solde si collecte < alpha*M*c)
         let eligBid = elig;
         if (p.mode === "garantie" && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
         if (p.mode === "garantie") {
@@ -276,6 +379,9 @@ export function simulerRun(p, graine) {
           } else { bid = 0; net = pot; avanceCumulee += pot; }
           cpt.prets.push({ membre: gagnant.i, restant: net, mensualite: net / dureePret, actif: true, tOctroi: t }); cpt.decaisseCumule += net;
           gagnant.aEncaisse = true; gagnant.tEnc = t; gagnant.recu += net;
+          // A4c — FLAG : au cycle 1, on signale les décaissements où le solde FGE est inférieur à la
+          // perte max possible du tour suivant (≈ le net qu'on vient d'avancer, exposé à une fuite).
+          if (cycle1 && p.fge_actif && getFge(pid) < net - 1e-9) tours_fge_sous_perte_max++;
           // HYPOTHÈSE : un membre sélectionné par le filtre de score (meilleur profil) fuit moins.
           if (filtreActif) gagnant.filtreScore = true;
           if (!bideur) nGratuits++;
@@ -350,17 +456,22 @@ export function simulerRun(p, graine) {
   const nEpargnants = pools.flat().filter(mb => mb.estEpargnant).length;
   const remunParEpargnant = nEpargnants ? totalRemun / nEpargnants : 0;
 
-  // P&L Opérateur (brut)
+  // P&L Opérateur — A6 : on expose le BRUT (revenus du mécanisme) ET le NET (− coûts de structure).
   const revenus = primes + surplusEnchere;
   const coutAcq = p.cout_acquisition_membre * nMembres, coutOps = p.cout_ops_pool_mois * nPools * mois;
   const coutsFixes = p.couts_fixes_mensuels * mois;
-  const pnlOp = revenus - (coutAcq + coutOps + coutsFixes);
-  const margePool = nPools ? (revenus - coutAcq - coutOps) / nPools : 0;
+  const pnlBrut = revenus;                                   // revenus bruts du mécanisme
+  const pnlNet = revenus - (coutAcq + coutOps + coutsFixes); // net des coûts de structure
+  const pnlOp = pnlNet;                                      // champ historique = P&L net
+  const margePool = nPools ? (revenus - coutAcq - coutOps) / nPools : 0;     // net/pool (hors fixes)
+  const pnlBrutPool = nPools ? revenus / nPools : 0;
+  const pnlNetPool = nPools ? pnlNet / nPools : 0;
   const breakEven = coutsFixes <= 0 ? (margePool > 1e-9 ? 0 : Infinity) : (margePool > 1e-9 ? coutsFixes / margePool : Infinity);
 
   // continuité PAR POOL : fraction des pools qui tiennent leur promesse (indépendant du nb de pools)
   const poolsCasses = comptes.filter(c => c.casse).length;
   const tauxContinuitePool = nPools ? 1 - poolsCasses / nPools : 1;
+  const nPoolsListeEpuisee = comptes.filter(c => c.listeEpuisee).length;
 
   return {
     nPools, nFuites, continuiteOk, residuel, perteSfd, coutTour1, nGratuits,
@@ -368,8 +479,11 @@ export function simulerRun(p, graine) {
     couvertFge, couvertSfd, fgeProvisions, fgeSaisies, primes, surplusEnchere, interetsSfd, avanceCumulee,
     remunEpargnants: totalRemun, remunParEpargnant, nEpargnants, interetsDepots,
     expoMois: exposMois, expoMax: Math.max(...exposMois),
-    pnlOp, margePool, breakEven, revenus, coutAcq, coutOps, seuilEmp,
-    vulnCycle1, tours_fge_insuffisant,
+    pnlOp, pnlBrut, pnlNet, pnlBrutPool, pnlNetPool, margePool, breakEven, revenus, coutAcq, coutOps, coutsFixes, seuilEmp,
+    vulnCycle1, tours_fge_insuffisant, tours_declench_force, tours_fge_sous_perte_max,
+    // A3 — logs remplacement / liste d'attente
+    nbRemplacements, nPoolsListeEpuisee,
+    perteNetteAvantRemplacement, perteNetteApresRemplacement,
   };
 }
 
@@ -393,15 +507,20 @@ export function journalPool(p, graine) {
     const candidatEmp = p.deux_populations ? (declareEmp && aHist) : true;
     const eligibleEnchere = candidatEmp && rng() < p.part_eligibles_enchere;
     return { i, nom: NOMS[i % NOMS.length], seuil: pr.seuil, rho: pr.rho, type: tp, urg, aHist,
-             candidatEmp, eligibleEnchere, estEpargnant: false,
-             aEncaisse: false, tEnc: null, aFui: false, consign: 0, cotise: 0, recu: 0, remplacant: null };
+             candidatEmp, eligibleEnchere, declareEmp, estEpargnant: false,
+             aEncaisse: false, tEnc: null, aFui: false, vacant: false, consign: 0, cotise: 0, recu: 0, remplacant: null };
     });
-  const cpt = { prets: [], decaisseCumule: 0, depot: 0, rompu: false, trou: 0, absorbeSfd: 0 };
+  const cpt = { prets: [], decaisseCumule: 0, depot: 0, rompu: false, trou: 0, absorbeSfd: 0,
+                remplDispo: Math.max(0, p.n_remplacants | 0), entreesEnAttente: [], listeEpuisee: false };
   let fge = 0, trancheUtil = 0, nRempl = 0;
   const etatZ = {};
   const chocFuite = p.comportemental_actif ? p.choc_fuite : 0;
   const rDepotMensuel = Math.pow(1 + (p.r_depot_annuel || 0), 1 / 12) - 1;  // mensualisation composée
-  const seuilEmp = Math.max(0, Math.min(m, Math.round(m / 2) + (p.deux_populations ? p.x_tours_emprunteurs : m)));
+  const bx = boundsX(m);
+  const xClamp = Math.min(bx.max, Math.max(bx.min, p.x_tours_emprunteurs || 0));
+  const seuilEmp = p.deux_populations ? Math.min(m - 1, Math.max(1, Math.round(m / 2) + xClamp)) : m;
+  // FGE pré-alimenté (A4c) : chaque emprunteur déclaré verse 1*c en prime de démarrage avant T1.
+  if (p.prime_demarrage_actif) { let nE = 0; for (const mb of membres) if (mb.declareEmp) nE++; if (nE > 0) fge += nE * p.c; }
 
   const tours = []; // { tour, cycle, slot, phase, mouvements:[{acteur,type,libelle,montant,depot,fge}] }
   const flux = (arr, acteur, type, libelle, montant) => arr.push({ acteur, type, libelle, montant, depot: cpt.depot, fge });
@@ -411,54 +530,59 @@ export function journalPool(p, graine) {
     if (slot === 0) for (const mb of membres) if (!mb.aFui) mb.aEncaisse = false;
     const mvt = [];
 
-    // 0. REMPLACEMENTS en attente (la place était vacante depuis le tour précédent) : un remplaçant
-    // arrive, rattrape les cotisations des tours passés (-> dépôt) et réactive le sous-compte.
-    for (const mb of membres) {
-      if (mb.vacant) {
+    // 0. REMPLACEMENTS différés (A3) : une fuite/arrêt au tour précédent a programmé l'entrée d'un
+    // remplaçant ce tour. Il prend le PROCHAIN slot libre (pas celui du fuyard), cotise dès maintenant,
+    // SANS droit aux tours passés ni rattrapage. Liste d'attente limitée (n_remplacants).
+    if (cpt.entreesEnAttente.length) {
+      for (const ent of cpt.entreesEnAttente) {
+        const slotVacant = membres.find(mb => mb.vacant);
+        if (!slotVacant) continue;
         const nom = REMPL[nRempl % REMPL.length]; nRempl++;
-        const rattrapage = slot * p.c; if (rattrapage > 0) cpt.depot += rattrapage;
-        const epargnant = mb.remplToType === 'epargnant';
-        const acces = epargnant ? "en ÉPARGNANT (pas d'enchère ce cycle)" : "avec droit d'enchère";
-        const txtRatt = rattrapage > 0 ? ` et rattrape ${slot} cotisation${slot > 1 ? 's' : ''}` : '';
-        flux(mvt, nom, rattrapage > 0 ? 'rattrapage' : 'remplacement', `${nom} remplace la place vacante ${acces}${txtRatt}`, rattrapage);
-        // réactivation du sous-compte
-        mb.aFui = false; mb.vacant = false; mb.aEncaisse = false; mb.tEnc = null;
-        mb.cotise = rattrapage; mb.nom = nom; mb.filtreScore = false;
-        mb.candidatEmp = !epargnant;       // épargnant : pas d'accès enchère ce cycle
-        mb.remplToType = null;
+        const acces = ent.type === 'emprunteur' ? "avec droit d'enchère" : "en ÉPARGNANT (pas d'enchère ce cycle)";
+        flux(mvt, nom, 'remplacement', `${nom} entre sur le prochain slot libre ${acces} (cotise dès ce mois, pas de droit aux tours passés)`, 0);
+        slotVacant.aFui = false; slotVacant.vacant = false; slotVacant.aEncaisse = false; slotVacant.tEnc = null;
+        slotVacant.cotise = 0; slotVacant.recu = 0; slotVacant.consign = 0; slotVacant.estEpargnant = false;
+        slotVacant.nom = nom; slotVacant.filtreScore = false;
+        slotVacant.candidatEmp = (ent.type === 'emprunteur'); slotVacant.declareEmp = (ent.type === 'emprunteur');
+        slotVacant.eligibleEnchere = false;
       }
+      cpt.entreesEnAttente = [];
     }
 
-    // 1a. CAS 1 — fuite d'un membre AYANT ENCAISSÉ : il part avec le crédit-relais.
+    // 1a. CAS 1 (A3) — fuite d'un encaisseur : il part avec le crédit-relais. PERTE NETTE de
+    // remplacement = principal restant − cotisations futures du remplaçant (t+1..vie) + c (gap), >=0.
+    // Liste épuisée : principal restant + cotisations futures manquantes (pas de remplacement).
     for (const mb of membres) {
-      if (mb.aEncaisse && !mb.aFui) {
+      if (mb.aEncaisse && !mb.aFui && !cpt.rompu) {
         const moisR = Math.max(1, vie - mb.tEnc);
         const baseFuite = p.p_fuite_base * (mb.filtreScore ? (p.red_fuite_eligible ?? 0.33) : 1);
         const pf = probaFuite(baseFuite, mb.tEnc, m, z, moisR, p.charge_z_fuite, p.fuite_mult_tour_precoce, chocFuite);
         if (rng() < pf) {
-          // PERTE = avance non amortie du fuyard (pr.restant). Absorption FGE -> cap SFD -> rupture.
-          let trou = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; trou += pr.restant; }
-          flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaisseur, tour T${mb.tEnc}) fuit — perte = avance non remboursée ; place vacante ce mois`, -trou);
+          let principalRestant = 0; for (const pr of cpt.prets) if (pr.membre === mb.i && pr.actif && pr.restant > 1e-9) { pr.actif = false; principalRestant += pr.restant; }
           if (p.garantie_enchere_active && mb.consign > 0) { fge += mb.consign; flux(mvt, 'FGE', 'saisie', `garantie d'enchère de ${mb.nom} saisie → FGE`, mb.consign); mb.consign = 0; }
-          // 1) FGE absorbe en premier (première perte)
-          const parFge = p.fge_actif ? Math.min(fge, trou) : 0; if (parFge > 0) { fge -= parFge; trou -= parFge; flux(mvt, 'FGE', 'couverture', `FGE absorbe la perte (première perte)`, -parFge); }
-          // 2) cap SFD = K cotisations, CUMULÉ sur le pool (skin in the game)
+          const cotisFutures = p.c * Math.max(0, vie - t);
+          let perteNette;
+          if (cpt.remplDispo > 0) { cpt.remplDispo--; cpt.entreesEnAttente.push({ type: 'epargnant', tEntree: t + 1 }); perteNette = Math.max(0, principalRestant - cotisFutures + p.c); }
+          else { cpt.listeEpuisee = true; perteNette = principalRestant + cotisFutures; }
+          flux(mvt, mb.nom, 'fuite', `${mb.nom} (encaisseur, tour T${mb.tEnc}) fuit — perte nette de remplacement = ${Math.round(perteNette)} ; place vacante`, -perteNette);
+          let trou = perteNette;
+          const parFge = p.fge_actif ? Math.min(fge, trou) : 0; if (parFge > 0) { fge -= parFge; trou -= parFge; flux(mvt, 'FGE', 'couverture', `FGE absorbe la perte nette (première perte)`, -parFge); }
           const capSfd = (p.cap_sfd_cotisations || 0) * p.c; const dispoSfd = Math.max(0, capSfd - (cpt.absorbeSfd || 0)); const parSfd = Math.min(dispoSfd, trou); if (parSfd > 0) { cpt.absorbeSfd = (cpt.absorbeSfd || 0) + parSfd; trou -= parSfd; flux(mvt, 'SFD', 'couverture', `tranche SFD absorbe (skin in the game)`, -parSfd); }
-          // 3) au-delà du cap -> RUPTURE du dispositif (promesse cassée)
-          if (trou > 1e-9) { flux(mvt, '—', 'rupture', `dispositif arrêté : perte > FGE + cap SFD`, -trou); cpt.rompu = true; }
-          // place vacante : remplacement matérialisé au TOUR SUIVANT (délai d'un tour)
-          mb.aFui = true; mb.vacant = true; mb.remplToType = 'epargnant';
+          if (trou > 1e-9) { flux(mvt, '—', 'rupture', `dispositif arrêté : perte nette > FGE + cap SFD`, -trou); cpt.rompu = true; }
+          mb.aFui = true; mb.vacant = true;
         }
       }
     }
-    // 1b. CAS 2 — arrêt d'un NON-encaisseur (paramétrable, off par défaut) : remboursé + remplaçant rattrape.
+    // 1b. CAS 2 (A5) — arrêt d'un NON-encaisseur : DISTINCT de la fuite, AUCUN trou (rien reçu).
+    // Remboursé de ses cotisations ; slot vacant, remplacé via la liste (avec droit d'enchère).
     if ((p.taux_arret_non_encaisseur || 0) > 0) {
       for (const mb of membres) {
-        if (!mb.aEncaisse && !mb.aFui && !mb.remplaceNonEnc && !mb.vacant && rng() < p.taux_arret_non_encaisseur) {
+        if (!mb.aEncaisse && !mb.aFui && !mb.vacant && !cpt.rompu && rng() < p.taux_arret_non_encaisseur) {
           const rembourse = mb.cotise; cpt.depot = Math.max(0, cpt.depot - rembourse);
-          flux(mvt, mb.nom, 'remboursement', `${mb.nom} (non-encaisseur) arrête — remboursé de ses cotisations ; place vacante ce mois`, -rembourse);
-          // place vacante : remplacement (avec droit d'enchère) matérialisé au TOUR SUIVANT
-          mb.aFui = true; mb.vacant = true; mb.remplToType = 'emprunteur';
+          flux(mvt, mb.nom, 'remboursement', `${mb.nom} (non-encaisseur) arrête — remboursé ; aucune perte sur avances ; place vacante`, -rembourse);
+          mb.aFui = true; mb.vacant = true;
+          if (cpt.remplDispo > 0) { cpt.remplDispo--; cpt.entreesEnAttente.push({ type: 'emprunteur', tEntree: t + 1 }); }
+          else cpt.listeEpuisee = true;
         }
       }
     }
@@ -486,7 +610,15 @@ export function journalPool(p, graine) {
       if (!elig.length) elig = nonEnc;                 // jamais de gel
       const cycle1 = t <= m;
       const filtreActif = cycle1;
-      if (filtreActif) { const e = elig.filter(mb => mb.eligibleEnchere); if (e.length) elig = e; }
+      if (filtreActif) {
+        // scoring P90->P50 sur mb.seuil (A4a), mirroir de simulerRun
+        const tri = membres.map(mb => mb.seuil).slice().sort((a, b) => a - b);
+        const frac = Math.min(1, Math.max(0, slot / Math.max(1, seuilEmp - 1)));
+        const sCut = quantile(tri, 0.90 - 0.40 * frac);
+        const e = elig.filter(mb => mb.seuil <= sCut + 1e-12);
+        if (e.length) elig = e;
+        else { const e2 = elig.filter(mb => mb.eligibleEnchere); if (e2.length) elig = e2; }
+      }
       let eligBid = elig;  // l'enchère se déclenche toujours
       if (p.mode === 'garantie' && p.mitigation_active && p.acces_sequence_active && slot < p.t_restreint) eligBid = eligBid.filter(mb => mb.aHist);
       let gagnant = null, bideur = false, bidW = 0;
@@ -554,14 +686,15 @@ export function journalPool(p, graine) {
     const expo = cpt.prets.filter(pr => pr.actif).reduce((s, pr) => s + pr.restant, 0);
     tours.push({ tour: t, cycle, slot: slot + 1, phase, mvt, depot: cpt.depot, fge, expo });
   }
-  return { m, pot, cycles: p.n_cycles, totalTours, tours, nRempl };
+  return { m, pot, cycles: p.n_cycles, totalTours, tours, nRempl, listeEpuisee: cpt.listeEpuisee };
 }
 
 // ---- Monte Carlo ----
 export function monteCarlo(p, nRuns, graineBase) {
-  const acc = { pnlOp: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [],
+  const acc = { pnlOp: [], pnlBrut: [], pnlNet: [], pnlNetPool: [], pnlBrutPool: [], continuite: [], residuel: [], perteSfd: [], expoMax: [], fuites: [], coutTour1: [], margePool: [], nGratuits: [],
                 interetsSfd: [], primes: [], surplusEnchere: [], fgeProvisions: [], fgeSaisies: [], couvertFge: [], couvertSfd: [], avanceCumulee: [],
-                remunEpargnants: [], remunParEpargnant: [], nEpargnants: [], interetsDepots: [] };
+                remunEpargnants: [], remunParEpargnant: [], nEpargnants: [], interetsDepots: [],
+                nbRemplacements: [], nPoolsListeEpuisee: [], perteNetteAvantRemplacement: [], perteNetteApresRemplacement: [] };
   let expoProfil = null, vulnProfil = null;
   const toursFgeInsuffisant = [];
   let poolsTot = 0, poolsCassesTot = 0, contPoolRuns = [];
@@ -586,6 +719,9 @@ export function monteCarlo(p, nRuns, graineBase) {
     acc.fgeProvisions.push(r.fgeProvisions); acc.fgeSaisies.push(r.fgeSaisies);
     acc.couvertFge.push(r.couvertFge); acc.couvertSfd.push(r.couvertSfd); acc.avanceCumulee.push(r.avanceCumulee);
     acc.remunEpargnants.push(r.remunEpargnants); acc.remunParEpargnant.push(r.remunParEpargnant); acc.nEpargnants.push(r.nEpargnants); acc.interetsDepots.push(r.interetsDepots);
+    acc.pnlBrut.push(r.pnlBrut); acc.pnlNet.push(r.pnlNet); acc.pnlNetPool.push(r.pnlNetPool); acc.pnlBrutPool.push(r.pnlBrutPool);
+    acc.nbRemplacements.push(r.nbRemplacements); acc.nPoolsListeEpuisee.push(r.nPoolsListeEpuisee);
+    acc.perteNetteAvantRemplacement.push(r.perteNetteAvantRemplacement); acc.perteNetteApresRemplacement.push(r.perteNetteApresRemplacement);
     if (!expoProfil) expoProfil = r.expoMois.map(() => 0);
     r.expoMois.forEach((v, j) => expoProfil[j] += v / nRuns);
   }
@@ -733,4 +869,158 @@ export function cadrageRisque(base, opts = {}) {
   const out = { rows, pareto, capMin };
   if (tronque) out.tronque = true;
   return out;
+}
+
+// ---- OPTIMISATION (mode 2) ----
+// Pour chaque SEGMENT (population avec son p_fuite et son c), balaie la grille (M, x, n_cycles,
+// sévérité) sous les CONTRAINTES promesse>=0.99, usure<=0.24, residuel/pot<=0.005, et MAXIMISE
+// pnlNet/pool. Calcule en plus une analyse de ROBUSTESSE (balayage de p_fuite -> p_fuite_rupture,
+// marge_securite) et une config RECOMMANDÉE qui maximise pnlNet sous marge_securite>=0.50.
+// Retour : { segments: [ { nom, p_fuite, optimale, robustesse, p_fuite_rupture, marge_securite,
+//                          recommandee }, ... ], _log }.
+export function optimiser(base, opts = {}) {
+  const segments = Array.isArray(opts.segments) && opts.segments.length ? opts.segments : [
+    { nom: 'salariés formels', p_fuite: 0.04, c: 50000 },
+    { nom: 'commerçants/informel', p_fuite: 0.08, c: 50000 },
+    { nom: 'primo-accédants', p_fuite: 0.12, c: 50000 },
+  ];
+  const Ms = opts.Ms || [4, 6, 8, 10, 12, 15, 20];
+  const xs = opts.xs || [-2, -1, 0, 1, 2, 3];
+  const cyclesArr = opts.cycles || [1, 2, 3, 4];
+  const severites = opts.severites || [0.3, 0.5, 0.7, 1.0];
+  const runsGrille0 = opts.runs || 250;
+  const runsFinal = 1000;
+
+  // Fixes SFD non optimisés (cap exprimé en % du pot -> nombre de cotisations)
+  const fixesSfd = (M) => ({ r_sfd_annuel: 0.18, r_depot_annuel: 0.05, cap_sfd_cotisations: 0.15 * (M - 1) });
+
+  const CONTR = { promesse: 0.99, usure: 0.24, residuelPot: 0.005 };
+  const MARGE_MIN = 0.50;
+
+  // borne du nombre total d'évaluations : grille admissible (x dans boundsX) × segments
+  let cellesGrille = 0;
+  for (const M of Ms) { const b = boundsX(M); for (const x of xs) { if (x < b.min || x > b.max) continue; cellesGrille += cyclesArr.length * severites.length; } }
+  const totalEval = cellesGrille * segments.length;
+  let runsGrille = runsGrille0;
+  const log = [];
+  if (totalEval > 3000) { runsGrille = 150; log.push(`grille=${totalEval} évaluations > 3000 -> runs balayage réduits à 150 (finales restent à 1000)`); }
+
+  // évalue une config pour un segment donné (renvoie les métriques) ; n_pools=1
+  const evalConfig = (seg, M, x, ncyc, sev, runs, graine = 12345) => {
+    const cfg = { ...base, ...fixesSfd(M), n_pools: 1, m_membres: M, c: seg.c, n_cycles: ncyc,
+                  x_tours_emprunteurs: x, part_eligibles_enchere: sev, p_fuite_base: seg.p_fuite };
+    const res = monteCarlo(cfg, runs, graine);
+    const usure = tauxUsureConfig(res, cfg);
+    const pot = (M - 1) * seg.c;
+    return {
+      M, x, n_cycles: ncyc, severite: sev,
+      promesse: res.taux_continuite_pool,
+      residuelPot: pot > 0 ? res.residuel.moy / pot : 0,
+      perteSfd: res.perteSfd.moy,
+      usure,
+      pnlNet: res.pnlNetPool.moy,
+      remunEparg: res.remunParEpargnant.moy,
+    };
+  };
+  const faisable = (r) => r.promesse >= CONTR.promesse - 1e-9 && r.usure <= CONTR.usure + 1e-9 && r.residuelPot <= CONTR.residuelPot + 1e-9;
+
+  // robustesse : balayage de p_fuite de -50% à +100% (7 points) autour de p_fuite_segment
+  const balayagePfuite = (seg, cfgDesc, runs) => {
+    const pts = [];
+    const facteurs = [0.5, 0.6667, 0.8333, 1.0, 1.3333, 1.6667, 2.0];
+    for (const f of facteurs) {
+      const pf = seg.p_fuite * f;
+      const r = evalConfig({ ...seg, p_fuite: pf }, cfgDesc.M, cfgDesc.x, cfgDesc.n_cycles, cfgDesc.severite, runs, 4242);
+      pts.push({ p_fuite: pf, promesse: r.promesse, residuelPot: r.residuelPot });
+    }
+    // p_fuite_rupture : premier point où promesse passe sous 0.99, interpolé linéairement
+    let rupture = null;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      if (a.promesse >= CONTR.promesse && b.promesse < CONTR.promesse) {
+        const frac = (CONTR.promesse - a.promesse) / (b.promesse - a.promesse);
+        rupture = a.p_fuite + frac * (b.p_fuite - a.p_fuite);
+        break;
+      }
+    }
+    // cas : déjà sous le seuil au point le plus bas -> rupture en deçà du balayage (prend le 1er point)
+    if (rupture === null && pts[0].promesse < CONTR.promesse) rupture = pts[0].p_fuite;
+    // robuste sur toute la plage : promesse >= 0.99 jusqu'au point le plus haut (+100%) -> pas de
+    // rupture observée ; la marge est alors >= +100% (borne inférieure = facteur max testé − 1).
+    const robusteSurPlage = rupture === null && pts[pts.length - 1].promesse >= CONTR.promesse;
+    return { pts, rupture, robusteSurPlage, facteurMax: facteurs[facteurs.length - 1] };
+  };
+
+  const sortie = [];
+  for (const seg of segments) {
+    // 1) balayage de grille
+    const evals = [];
+    for (const M of Ms) {
+      const b = boundsX(M);
+      for (const x of xs) {
+        if (x < b.min || x > b.max) continue;
+        for (const ncyc of cyclesArr) {
+          for (const sev of severites) {
+            evals.push(evalConfig(seg, M, x, ncyc, sev, runsGrille));
+          }
+        }
+      }
+    }
+    const faisables = evals.filter(faisable);
+    // 2) candidats triés par pnlNet (grille). On RE-SCREENE au finale (1000 runs) en descendant la
+    // liste : on évite de retenir une config qui n'était faisable que par bruit MC à faible nombre
+    // de runs (frontière). On garde la 1re config dont la mesure 1000-runs reste faisable.
+    const candidatsGrille = faisables.slice().sort((a, b) => b.pnlNet - a.pnlNet);
+    let optimale = null, opt1000 = null;
+    for (const cand of candidatsGrille.slice(0, 8)) {     // re-screen au plus le top 8 (coût borné)
+      const f1000 = evalConfig(seg, cand.M, cand.x, cand.n_cycles, cand.severite, runsFinal);
+      if (faisable(f1000)) { optimale = cand; opt1000 = f1000; break; }
+    }
+    // repli : aucune confirmée à 1000 runs -> on garde la meilleure faisable-grille (signalée).
+    if (!optimale && faisables.length) {
+      optimale = candidatsGrille[0];
+      opt1000 = evalConfig(seg, optimale.M, optimale.x, optimale.n_cycles, optimale.severite, runsFinal);
+      log.push(`segment « ${seg.nom} » : meilleure config faisable-grille NON confirmée à ${runsFinal} runs (bruit MC près de la frontière) — reportée à titre indicatif`);
+    }
+
+    if (!optimale) {
+      log.push(`segment « ${seg.nom} » (p_fuite=${seg.p_fuite}) : AUCUNE config ne satisfait les 3 contraintes`);
+      sortie.push({ nom: seg.nom, p_fuite: seg.p_fuite, optimale: null, faisable: false,
+                    robustesse: [], p_fuite_rupture: null, marge_securite: null, recommandee: null });
+      continue;
+    }
+
+    // 4) robustesse autour de la config optimale. Marge : rupture détectée -> (rupture−pf)/pf ;
+    // robuste sur toute la plage (jamais sous 0.99 jusqu'à +100%) -> marge >= facteurMax−1 (borne inf).
+    const rob = balayagePfuite(seg, optimale, runsGrille);
+    const rupture = rob.rupture;
+    const marge = rupture != null
+      ? (rupture - seg.p_fuite) / seg.p_fuite
+      : (rob.robusteSurPlage ? (rob.facteurMax - 1) : null);
+
+    // 5) recommandée : max pnlNet sous marge_securite>=0.50, évaluée sur le TOP 5 par pnlNet
+    const top5 = faisables.slice().sort((a, b) => b.pnlNet - a.pnlNet).slice(0, 5);
+    let recommandee = null;
+    for (const cand of top5) {
+      const rb = balayagePfuite(seg, cand, runsGrille);
+      const rup = rb.rupture;
+      const mg = rup != null
+        ? (rup - seg.p_fuite) / seg.p_fuite
+        : (rb.robusteSurPlage ? (rb.facteurMax - 1) : -Infinity); // null sans robustesse confirmée -> exclu
+      if (mg >= MARGE_MIN && (!recommandee || cand.pnlNet > recommandee.pnlNet)) {
+        recommandee = { ...cand, marge_securite: mg, p_fuite_rupture: rup };
+      }
+    }
+
+    sortie.push({
+      nom: seg.nom, p_fuite: seg.p_fuite, faisable: true,
+      optimale: { ...optimale, ...opt1000 },   // métriques recalées à 1000 runs
+      robustesse: rob.pts,
+      p_fuite_rupture: rupture,
+      marge_securite: marge,
+      recommandee,
+    });
+  }
+
+  return { segments: sortie, _log: log };
 }

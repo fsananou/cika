@@ -14,70 +14,27 @@
       <span class="topbar-titre">Simulateur</span>
     </div>
     <div class="seg" id="ongletSeg">
-      <button class="seg-btn active" data-onglet="parametres">Paramètres</button>
-      <button class="seg-btn" data-onglet="cadrage">Cadrage du risque</button>
+      <button class="seg-btn active" data-onglet="parametres">Exploration</button>
+      <button class="seg-btn" data-onglet="cadrage">Optimisation</button>
       <button class="seg-btn" data-onglet="resultats">Résultats</button>
       <button class="seg-btn" data-onglet="flux">Flux</button>
     </div>
   </div>
 </nav>
 
-<!-- ============ ONGLET PARAMÈTRES (comportement, stress, profils, couverture) ============ -->
+<!-- ============ ONGLET EXPLORATION (tous les leviers libres + lancement) ============ -->
 <main id="vue-parametres">
   <section class="wrap">
-    <p class="flux-sub" style="margin-bottom:14px">Les leviers de comportement, de stress et de couverture. La structure du cercle (taille, cotisation, durée) et le lancement se règlent dans l'onglet <b>Cadrage du risque</b>.</p>
+    <div id="exploBandeau" class="explo-bandeau" hidden>
+      <span id="exploBandeauTxt"></span>
+      <button id="exploBandeauX" class="explo-bandeau-x" title="Fermer">×</button>
+    </div>
+    <p class="flux-sub" style="margin-bottom:14px">Réglez librement chaque levier (structure, comportement, stress, couverture), puis lancez la simulation. Tous les paramètres sont des entrées libres — pour une recherche automatique de la meilleure structure par segment, voyez l'onglet <b>Optimisation</b>.</p>
     <div id="paramGroupes" class="param-cols"></div>
-  </section>
-</main>
 
-<!-- ============ ONGLET CADRAGE DU RISQUE (structure + optimisation + lancement) ============ -->
-<main id="vue-cadrage" hidden>
-  <section class="wrap">
-    <div class="card">
-      <h3>Cadrage du risque — optimisation</h3>
-      <p class="flux-sub">Définissez une <b>plage</b> à explorer pour chaque levier (min–max). L'optimiseur balaie toutes les combinaisons (Monte Carlo, par pool) et cherche celles qui <b>respectent le cap SFD</b> et le <b>seuil d'usure UEMOA</b> (≤ 24 %). Il en ressort la meilleure structure (M, cotisation, durée, profils) et la promesse atteinte — et, pour une promesse cible, le cap minimal nécessaire.</p>
-      <div id="cadrageBandes" class="cadrage-bandes"></div>
-      <div class="run-actions"><button id="btnCadrage" class="btn big">Lancer l'optimisation</button><button id="btnCadrageReset" class="btn ghost">Plages par défaut</button><span class="param-status" id="cadrageStatus"></span></div>
-    </div>
-
-    <div class="card" id="cadrageGagnanteCard" hidden>
-      <h3>Configuration optimale <span class="hint">perte sèche minimale, à promesse cible tenue</span></h3>
-      <div id="cadrageGagnante" class="cadrage-gagnante"></div>
-      <div class="cadrage-cible">
-        <label>Promesse cible : <output id="cibleOut">95%</output>
-          <input type="range" id="cibleSlider" min="0.80" max="1" step="0.01" value="0.95"></label>
-        <div id="cadrageCible" class="cadrage-cible-res"></div>
-      </div>
-    </div>
-
-    <!-- LECTURE INVERSÉE : on fixe 2 leviers, l'optimiseur résout le 3e -->
-    <div class="card" id="cadrageResoudreCard" hidden>
-      <h3>Résoudre un levier <span class="hint">fixez les autres, on calcule l'optimal</span></h3>
-      <div class="resoudre-ctrls">
-        <label>Résoudre pour
-          <select id="res_levier"><option value="cs">Cotisation (c)</option><option value="Ms">Taille (M)</option><option value="durees">Durée</option></select></label>
-        <label>Taille M <span id="res_M_wrap"><input type="range" id="res_M" min="4" max="20" step="1" value="10"><output id="res_M_out">10</output></span></label>
-        <label>Cotisation <span id="res_c_wrap"><input type="range" id="res_c" min="1" max="100000" step="1" value="25000"><output id="res_c_out">25k</output></span></label>
-        <label>Durée <span id="res_d_wrap"><input type="range" id="res_d" min="1" max="4" step="1" value="2"><output id="res_d_out">2</output></span></label>
-      </div>
-      <div id="cadrageResoudre" class="cadrage-gagnante"></div>
-    </div>
-
-    <div class="card">
-      <h3>Tableau croisé c × M <span class="hint">promesse par couple, au cap choisi · grisé = usure dépassée</span></h3>
-      <div id="cadrageCroise" class="table-wrap"></div>
-    </div>
-
-    <div class="card">
-      <h3>Configurations explorées <span class="hint">top 12 par perte sèche · usure respectée</span></h3>
-      <div id="cadrageTable" class="table-wrap"></div>
-    </div>
-
-    <!-- structure retenue + lancement de la simulation détaillée -->
-    <div class="card">
-      <h3>Structure retenue & lancement <span class="hint">réglez puis lancez pour voir les résultats détaillés</span></h3>
-      <div id="paramStructure" class="param-cols"></div>
-      <div class="preset-row" style="margin-top:14px">
+    <div class="card" style="margin-top:24px">
+      <h3>Lancement <span class="hint">choisissez un scénario de stress, réglez la précision, puis lancez</span></h3>
+      <div class="preset-row" style="margin-top:4px">
         <div>
           <h3>Scénario</h3>
           <div class="seg" id="presetSeg">
@@ -97,7 +54,25 @@
           <span class="param-status" id="simStatus"></span>
         </div>
       </div>
+      <div id="exploGardeFous" class="garde-fous" hidden></div>
     </div>
+  </section>
+</main>
+
+<!-- ============ ONGLET OPTIMISATION (recherche de la config optimale par segment) ============ -->
+<main id="vue-cadrage" hidden>
+  <section class="wrap">
+    <div class="card">
+      <h3>Optimisation par segment</h3>
+      <p class="flux-sub">Pour chaque <b>segment</b> de population (caractérisé par son taux de fuite), l'optimiseur balaie une grille de structures (taille M, décalage x, durée, sévérité du scoring) et retient celle qui <b>maximise le P&amp;L net par pool</b> sous les contraintes : promesse ≥ 99 %, usure ≤ 24 %, perte résiduelle / pot ≤ 0,5 %. Il calcule aussi la <b>robustesse</b> (taux de fuite de rupture, marge de sécurité) et propose une config <b>recommandée</b> (marge ≥ 50 %). Optimisez un segment à la fois (≈ 15 s chacun).</p>
+    </div>
+
+    <details class="card opt-espace">
+      <summary>Espace de recherche &amp; paramètres SFD <span class="hint">optionnel — sinon valeurs par défaut du moteur</span></summary>
+      <div id="optEspace" class="opt-espace-grid"></div>
+    </details>
+
+    <div id="segCards" class="seg-cards"></div>
   </section>
 </main>
 

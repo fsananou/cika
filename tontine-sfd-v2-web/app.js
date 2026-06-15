@@ -1,4 +1,4 @@
-import { DEFAUTS, monteCarlo, decompositionCout, journalPool, cadrageRisque } from './moteur.js?v=20';
+import { DEFAUTS, monteCarlo, decompositionCout, journalPool, optimiser, boundsX } from './moteur.js?v=20';
 
 // mode unitaire : quand la cotisation = 1, on lit les montants en multiples de cotisation (×c)
 const unitaire = () => PARAMS && PARAMS.c === 1;
@@ -10,8 +10,17 @@ const fmtFlux = x => unitaire() ? x.toFixed(2) + '×c' : x.toLocaleString('fr-FR
 const pct = x => (x * 100).toFixed(x * 100 < 1 && x > 0 ? 1 : 0) + '%';
 const $ = id => document.getElementById(id);
 
-// config maître unique (tous les paramètres) + nb de runs
-let PARAMS = { ...DEFAUTS, _runs: 80 };
+// config maître unique (tous les paramètres) + nb de runs.
+// cap_pct_pot : levier synthétique (cap SFD en % du pot) converti en cap_sfd_cotisations avant
+// chaque run via configRun() — cap_sfd_cotisations = cap_pct_pot × (M−1).
+let PARAMS = { ...DEFAUTS, _runs: 80, cap_pct_pot: 0.15 };
+
+// convertit le cap % du pot en cap_sfd_cotisations (ce que le moteur consomme)
+function configRun(p) {
+  const cfg = { ...p };
+  if (typeof cfg.cap_pct_pot === 'number') cfg.cap_sfd_cotisations = cfg.cap_pct_pot * Math.max(1, cfg.m_membres - 1);
+  return cfg;
+}
 
 // ---- navigation : 2 onglets (Paramètres / Résultats) ----
 function montrerOnglet(onglet) {
@@ -21,7 +30,7 @@ function montrerOnglet(onglet) {
   $('vue-resultats').hidden = (onglet !== 'resultats');
   $('vue-flux').hidden = (onglet !== 'flux');
   if (onglet === 'flux') renderFlux();
-  if (onglet === 'cadrage') renderCadrageCtrls();
+  if (onglet === 'cadrage') renderOptimisation();
 }
 document.querySelectorAll('#ongletSeg .seg-btn').forEach(b => b.addEventListener('click', () => montrerOnglet(b.dataset.onglet)));
 function allerResultats() { montrerOnglet('resultats'); }
@@ -30,14 +39,14 @@ function allerResultats() { montrerOnglet('resultats'); }
 const SCHEMA = [
   { grp: 'Structure du cercle', desc: "La taille et la durée des pools.", items: [
     { k: 'n_pools', nom: 'Nombre de pools', d: "Cercles en parallèle. 1 = vue unitaire (un seul pool) ; montez pour voir l'échelle du portefeuille.", t: 'range', min: 1, max: 100, step: 1 },
-    { k: 'm_membres', nom: 'Membres par pool', d: "Taille d'un cercle. Détermine le pot = (M−1)×cotisation.", t: 'range', min: 6, max: 15, step: 1 },
-    { k: 'c', nom: 'Cotisation mensuelle', d: "Ce que chaque membre verse chaque mois. Mettez 1 pour raisonner en unités (tout devient un multiple de la cotisation).", t: 'logrange', min: 1, max: 200000, fmt: 'k' },
+    { k: 'm_membres', nom: 'Membres par pool (M)', d: "Taille d'un cercle. Détermine le pot = (M−1)×cotisation.", t: 'range', min: 4, max: 20, step: 1 },
+    { k: 'c', nom: 'Cotisation mensuelle', d: "Ce que chaque membre verse chaque mois. Mettez 1 pour raisonner en unités (tout devient un multiple de la cotisation).", t: 'logrange', min: 1, max: 100000, fmt: 'k' },
     { k: 'n_cycles', nom: 'Nombre de cycles', d: "Durée de vie du produit = M × cycles mois.", t: 'range', min: 1, max: 4, step: 1 },
     { k: 'k_max', nom: 'Max même secteur / pool', d: "Diversification : au plus K membres du même secteur par pool (limite la corrélation).", t: 'range', min: 1, max: 6, step: 1 },
   ]},
   { grp: 'Deux populations', desc: "Sépare emprunteurs (enchères, début) et épargnants (fin, rémunérés).", items: [
     { k: 'deux_populations', nom: 'Modèle deux populations', d: "Les premiers tours = emprunteurs (enchères) ; les derniers = épargnants (servis du plus sûr au moins sûr, rémunérés).", t: 'bool' },
-    { k: 'x_tours_emprunteurs', nom: 'Décalage x (tours emprunteurs)', d: "Nombre de tours empruntables = N/2 + x. Plus haut = plus d'emprunteurs, plus de revenu, moins d'épargnants.", t: 'range', min: -3, max: 4, step: 1 },
+    { k: 'x_tours_emprunteurs', nom: 'Décalage x (tours emprunteurs)', d: "Tours empruntables = round(M/2) + x. Les bornes min/max dépendent de M (boundsX). Plus haut = plus d'emprunteurs, plus de revenu, moins d'épargnants.", t: 'range', min: -3, max: 4, step: 1, dyn: 'x' },
     { k: 'part_emprunteurs_declares', nom: 'Part candidats-emprunteurs', d: "Part de membres qui déclarent vouloir emprunter ET sont jugés fiables (accès précoce).", t: 'range', min: 0.2, max: 0.9, step: 0.05, fmt: 'pct' },
     { k: 'part_bids_aux_epargnants', nom: 'Part des bids aux épargnants', d: "Fraction du surplus d'enchères reversée aux épargnants (leur rémunération).", t: 'range', min: 0, max: 0.8, step: 0.05, fmt: 'pct' },
     { k: 'r_depot_annuel', nom: 'Rémunération des dépôts', d: "Taux ANNUEL que la SFD verse sur les dépôts, mensualisé en composé ((1+r)^(1/12)−1). Rémunère l'épargne déjà déposée (pas l'argent du mois courant).", t: 'range', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
@@ -67,12 +76,17 @@ const SCHEMA = [
     { k: 'g_cotisations', nom: 'Consignation pour bider tôt', d: "Garantie (en nb de cotisations) saisie si fuite.", t: 'range', min: 0, max: 3, step: 1 },
     { k: 'fge_actif', nom: 'FGE (fonds de garantie)', d: "Le fonds endogène (primes + saisies) qui absorbe en premier.", t: 'bool' },
     { k: 'tranche_sfd_active', nom: 'Tranche SFD', d: "La SFD absorbe après le FGE (sa peau dans le jeu).", t: 'bool' },
-    { k: 'cap_sfd_cotisations', nom: 'Cap SFD (en cotisations)', d: "Skin in the game : la SFD absorbe jusqu'à ce nombre de cotisations de pertes par pool (après le FGE). Au-delà = rupture du dispositif.", t: 'range', min: 0, max: 10, step: 1 },
+    { k: 'cap_pct_pot', nom: 'Cap SFD (% du pot)', d: "Skin in the game : la SFD absorbe jusqu'à ce % du pot en pertes par pool (après le FGE). Au-delà = rupture du dispositif.", t: 'range', min: 0, max: 0.50, step: 0.01, fmt: 'pct' },
     { k: 'fge_mutualise', nom: 'FGE mutualisé entre pools', d: "Non = chaque pool autonome (la solidité ne dépend que du pool, cadre « 1 pool »). Oui = un pool sain peut renflouer un pool en fuite.", t: 'bool' },
   ]},
   { grp: 'Profils & cycle 1', desc: "Les premiers tours du cycle 1 sont réservés (en interne) aux profils sûrs, servis tant qu'il en reste ; ils fuient moins.", items: [
-    { k: 'part_eligibles_enchere', nom: 'Part de profils sûrs', d: "Fraction des candidats-emprunteurs jugés sûrs (bon score). Ils sont servis en priorité aux premiers tours. Le scoring peut se tromper : c'est une probabilité, pas une garantie.", t: 'range', min: 0.2, max: 1, step: 0.05, fmt: 'pct' },
+    { k: 'part_eligibles_enchere', nom: 'Sévérité du scoring / offre de crédit', d: "Fraction du pool que l'Opérateur AUTORISE aux tours emprunteurs (offre de crédit, pas la demande). Sévérité basse = offre restreinte aux meilleurs profils, qui fuient moins. Le scoring peut se tromper : c'est une probabilité, pas une garantie.", t: 'range', min: 0.2, max: 1, step: 0.05, fmt: 'pct' },
     { k: 'red_fuite_eligible', nom: 'Fuite des profils sûrs', d: "Taux de fuite des profils sûrs, en proportion du taux de base (0,33 = ils fuient 3× moins). C'est ce qui rend la sélection protectrice.", t: 'range', min: 0.2, max: 1, step: 0.1, fmt: 'x' },
+  ]},
+  { grp: 'Coûts de structure', desc: "Charges du dispositif, déduites du P&L net (défaut 0 = net égal au brut).", items: [
+    { k: 'cout_acquisition_membre', nom: "Coût d'acquisition / membre", d: "Coût one-shot par membre recruté (KYC, onboarding).", t: 'range', min: 0, max: 20000, step: 500, fmt: 'k' },
+    { k: 'cout_ops_pool_mois', nom: 'Coût ops / pool / mois', d: "Coût opérationnel par pool et par mois (suivi, relances).", t: 'range', min: 0, max: 20000, step: 500, fmt: 'k' },
+    { k: 'couts_fixes_mensuels', nom: 'Frais fixes mensuels', d: "Frais fixes mensuels du dispositif (structure), répartis sur les pools.", t: 'range', min: 0, max: 500000, step: 10000, fmt: 'k' },
   ]},
   { grp: 'Stress', desc: "Tester le modèle en conditions dégradées.", items: [
     { k: 'comportemental_actif', nom: 'Stress comportemental', d: "Plus de fuites et plus de membres pressés.", t: 'bool' },
@@ -120,11 +134,10 @@ const grpHtml = g => `
       ${g.items.map(it => paramRow(it)).join('')}
     </details>`;
 function renderParametres() {
-  // « Structure du cercle » va sur la page Cadrage (#paramStructure) ; le reste sur Paramètres.
-  const estStructure = g => g.grp === 'Structure du cercle';
-  $('paramGroupes').innerHTML = SCHEMA.filter(g => !estStructure(g)).map(grpHtml).join('');
-  const struct = $('paramStructure'); if (struct) struct.innerHTML = SCHEMA.filter(estStructure).map(grpHtml).join('');
+  // MODE 1 — exploration libre : TOUS les groupes (dont « Structure du cercle ») sur l'Exploration.
+  $('paramGroupes').innerHTML = SCHEMA.map(grpHtml).join('');
   SCHEMA.flatMap(g => g.items).forEach(it => attachParam(it));
+  majBornesX();
 }
 function paramRow(it) {
   let ctrl = '';
@@ -136,12 +149,60 @@ function paramRow(it) {
 }
 function attachParam(it) {
   const el = $('px_' + it.k); if (!el) return;
-  if (it.t === 'range') el.addEventListener('input', e => { PARAMS[it.k] = +e.target.value; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); marquerModifie(); });
+  if (it.t === 'range') el.addEventListener('input', e => { PARAMS[it.k] = +e.target.value; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); if (it.k === 'm_membres') majBornesX(); marquerModifie(); });
   else if (it.t === 'logrange') el.addEventListener('input', e => { PARAMS[it.k] = logToVal(+e.target.value, it.min, it.max); $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); marquerModifie(); });
   else el.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => { el.querySelectorAll('button').forEach(b => b.classList.remove('on')); btn.classList.add('on'); PARAMS[it.k] = (it.t === 'mode') ? btn.dataset.v : (btn.dataset.v === '1'); marquerModifie(); }));
 }
-function syncParametres() { SCHEMA.flatMap(g => g.items).forEach(it => { const el = $('px_' + it.k); if (!el) return; if (it.t === 'range') { el.value = PARAMS[it.k]; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else if (it.t === 'logrange') { el.value = valToLog(PARAMS[it.k], it.min, it.max); $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else { el.querySelectorAll('button').forEach(b => b.classList.toggle('on', (it.t === 'mode' ? b.dataset.v === PARAMS[it.k] : (b.dataset.v === '1') === !!PARAMS[it.k]))); } }); }
-function marquerModifie() { $('simStatus').textContent = '⟳ relancez pour voir l\'effet'; }
+// recalcule les bornes du curseur x (tours emprunteurs) selon M, via boundsX(M)
+function majBornesX() {
+  const el = $('px_x_tours_emprunteurs'); if (!el) return;
+  const b = boundsX(PARAMS.m_membres);
+  el.min = b.min; el.max = b.max;
+  if (PARAMS.x_tours_emprunteurs < b.min) PARAMS.x_tours_emprunteurs = b.min;
+  if (PARAMS.x_tours_emprunteurs > b.max) PARAMS.x_tours_emprunteurs = b.max;
+  el.value = PARAMS.x_tours_emprunteurs;
+  $('pv_x_tours_emprunteurs').textContent = fmtParam(PARAMS.x_tours_emprunteurs, undefined);
+}
+function syncParametres() { SCHEMA.flatMap(g => g.items).forEach(it => { const el = $('px_' + it.k); if (!el) return; if (it.t === 'range') { el.value = PARAMS[it.k]; $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else if (it.t === 'logrange') { el.value = valToLog(PARAMS[it.k], it.min, it.max); $('pv_' + it.k).textContent = fmtParam(PARAMS[it.k], it.fmt); } else { el.querySelectorAll('button').forEach(b => b.classList.toggle('on', (it.t === 'mode' ? b.dataset.v === PARAMS[it.k] : (b.dataset.v === '1') === !!PARAMS[it.k]))); } }); majBornesX(); majGardeFous(); }
+function marquerModifie() { $('simStatus').textContent = '⟳ relancez pour voir l\'effet'; majGardeFous(); }
+
+// ---- GARDE-FOUS (mode 1) : avertissements non bloquants au-dessus du bouton Lancer ----
+// Pré-vérifiables sans run : éligibles enchère < 1, plus d'épargnant. Post-run (depuis le dernier
+// monteCarlo) : usure tour 1 > 24%, perte résiduelle non nulle.
+let dernierPourGardeFous = null;
+function majGardeFous() {
+  const host = $('exploGardeFous'); if (!host) return;
+  const M = PARAMS.m_membres, pe = PARAMS.part_eligibles_enchere;
+  const seuilEmp = PARAMS.deux_populations ? Math.max(1, Math.min(M, Math.round(M / 2) + PARAMS.x_tours_emprunteurs)) : M;
+  const av = [];
+  // pré-run (calculables sans simulation)
+  if (M * pe < 1) av.push({ g: 'warn', t: 'Moins d\'1 emprunteur éligible', d: `M × sévérité = ${(M * pe).toFixed(2)} < 1 : aucun candidat n'est autorisé aux tours emprunteurs.` });
+  if (PARAMS.deux_populations && seuilEmp >= M) av.push({ g: 'bad', t: 'Aucun épargnant', d: `tours emprunteurs (${seuilEmp}) ≥ M (${M}) : il ne reste personne pour la population épargnante (x trop élevé).` });
+  // post-run (depuis le dernier résultat, valable uniquement si les leviers structurels
+  // n'ont pas changé depuis le dernier calcul — sinon ces deux garde-fous sont en attente)
+  const postFrais = dernierPourGardeFous && dernierPourGardeFous.cle === cleStruct(PARAMS);
+  if (postFrais) {
+    const d = dernierPourGardeFous;
+    const usure1 = d.usureTour1;
+    if (usure1 != null && usure1 > 0.24) av.push({ g: 'bad', t: 'Usure tour 1 > 24% — non conforme BCEAO/UEMOA', d: `coût du crédit-relais annualisé au tour 1 ≈ ${(usure1 * 100).toFixed(1)}% (> 24%).` });
+    if (d.residuelMoy != null && d.residuelMoy > 1e-6) av.push({ g: 'bad', t: 'Perte résiduelle non nulle — promesse menacée', d: `résiduel moyen / pool ≈ ${fmtM(d.residuelMoy)} (perte sèche non couverte).` });
+  }
+  host.hidden = false;
+  if (!av.length) {
+    // aucun garde-fou : encart vert discret. Précise si l'usure/résiduel restent à vérifier.
+    const note = postFrais ? 'usure tour 1 et perte résiduelle conformes au dernier calcul.' : 'lancez pour vérifier l\'usure tour 1 et la perte résiduelle.';
+    host.innerHTML = `<div class="gf-item gf-ok"><span class="gf-t">Config valide</span><span class="gf-d">${note}</span></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="gf-titre">Avertissements</div>` + av.map(a =>
+    `<div class="gf-item gf-${a.g}"><span class="gf-t">${a.t}</span><span class="gf-d">${a.d}</span></div>`).join('');
+}
+// usure annualisée au tour 1, formule du moteur (tauxUsureConfig) appliquée à un résultat monteCarlo :
+// (coutTour1.moy / pot) × 12 / (M−1).
+function usureTour1(res, p) {
+  const pot = (p.m_membres - 1) * p.c; if (pot <= 0) return null;
+  return (res.coutTour1.moy / pot) * (12 / Math.max(1, p.m_membres - 1));
+}
 
 // presets
 document.querySelectorAll('#presetSeg .seg-btn').forEach(b => b.addEventListener('click', () => {
@@ -161,16 +222,26 @@ function lancer() {
   setTimeout(() => {
     const a = monteCarlo({ ...PARAMS }, PARAMS._runs, 12345);
     dernier = a;
+    // mémorise les indicateurs post-run pour les garde-fous (usure tour 1, résiduel),
+    // attachés aux leviers structurels courants (M, c, x, sévérité, fuite, cap).
+    dernierPourGardeFous = {
+      usureTour1: usureTour1(a, PARAMS),
+      residuelMoy: a.residuel.moy,
+      cle: cleStruct(PARAMS),
+    };
     renderKPIs(a, PARAMS);
     renderCoutDecompo(PARAMS);
     renderFluxSfd(a, PARAMS);
     renderTableauScenarios();
     drawPnlDist(a);
+    majGardeFous();
     $('btnRun').textContent = 'Lancer';
     $('simStatus').textContent = 'calculé';
     allerResultats();
   }, 20);
 }
+// signature des leviers structurels : si l'un change, les indicateurs post-run ne s'appliquent plus
+function cleStruct(p) { return [p.m_membres, p.c, p.x_tours_emprunteurs, p.part_eligibles_enchere, p.p_fuite_base, p.cap_pct_pot, p.n_cycles, p.deux_populations].join('|'); }
 
 function kpiV(o, fmtf) { return `${fmtf(o.moy)} <span class="pp">[${fmtf(o.p5)}–${fmtf(o.p95)}]</span>`; }
 
@@ -313,191 +384,192 @@ function renderFlux() {
 }
 $('btnFluxReroll').addEventListener('click', () => { fluxGraine++; renderFlux(); });
 
-// ---- page CADRAGE DU RISQUE (optimiseur multi-leviers, bandes min–max) ----
-// Chaque levier se règle en PLAGE (min–max + pas auto). L'optimiseur balaie toutes les
-// combinaisons et cherche la meilleure structure respectant le cap SFD + l'usure UEMOA.
-// Le CAP SFD est une CONTRAINTE à valeur unique (curseur simple, géré à part).
-// Les autres leviers — dont la cotisation c — sont balayés en bandes min–max.
-const BANDES = [
-  { k: 'Ms',         nom: 'Taille du pool (M)',    hint: 'membres',          min: 4,    max: 20,     pas: 1,     lo: 6,     hi: 12,     fmt: 'int' },
-  { k: 'cs',         nom: 'Cotisation (c)',        hint: 'XOF',              min: 1,    max: 100000, pas: 1,     lo: 1,     hi: 100000, fmt: 'k' },
-  { k: 'durees',     nom: 'Durée (cycles)',        hint: '',                 min: 1,    max: 4,      pas: 1,     lo: 1,     hi: 2,      fmt: 'int' },
-  { k: 'partsSurs',  nom: 'Part de profils sûrs',  hint: '',                 min: 0.2,  max: 1,      pas: 0.05,  lo: 0.55,  hi: 0.85,   fmt: 'pct' },
-  { k: 'partsEpargnant', nom: 'Part d\'épargnants', hint: '',                min: 0.1,  max: 0.6,    pas: 0.05,  lo: 0.30,  hi: 0.30,   fmt: 'pct' },
-  { k: 'rDepots',    nom: 'Rémunération dépôts',   hint: 'annuel, mensualisé', min: 0,  max: 0.10,   pas: 0.01,  lo: 0.05,  hi: 0.05,   fmt: 'pct' },
+// ============ MODE 2 — OPTIMISATION PAR SEGMENT ============
+// Trois segments de population, caractérisés par leur taux de fuite. Pour chaque segment,
+// l'optimiseur (moteur) balaie une grille (M, x, n_cycles, sévérité) et retient la config qui
+// maximise le P&L net/pool sous contraintes (promesse>=99%, usure<=24%, résiduel/pot<=0,5%),
+// puis évalue sa robustesse et propose une config recommandée (marge>=50%).
+const SEGMENTS = [
+  { id: 'salaries',   nom: 'Salariés formels',       p_fuite: 0.04, c: 50000 },
+  { id: 'commercants', nom: 'Commerçants / informel', p_fuite: 0.08, c: 50000 },
+  { id: 'primo',      nom: 'Primo-accédants',        p_fuite: 0.12, c: 50000 },
 ];
-// CAP SFD = % du pot (contrainte simple, bornée). On affiche l'équivalent absolu par config.
-const CAP = { min: 0.02, max: 0.50, pas: 0.01, val: 0.15 };
-const fmtB = (v, f) => f === 'pct' ? Math.round(v * 100) + '%' : f === 'k' ? (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1000 ? Math.round(v / 1000) + 'k' : '' + v) : '' + v;
-// valeurs balayées sur [lo,hi] au pas b.pas, mais bornées à MAX_PTS (échantillonnage régulier)
-const MAX_PTS = 8;
-function rangeVals(b) {
-  const brut = []; for (let v = b.lo; v <= b.hi + 1e-9; v += b.pas) brut.push(+v.toFixed(4));
-  if (!brut.length) return [b.lo];
-  if (brut.length <= MAX_PTS) return brut;
-  const out = []; for (let i = 0; i < MAX_PTS; i++) out.push(brut[Math.round(i * (brut.length - 1) / (MAX_PTS - 1))]);
-  return [...new Set(out)];
+// grille de recherche (informative + reflète les défauts du moteur optimiser())
+const GRILLE_OPT = { Ms: [4, 6, 8, 10, 12, 15, 20], xs: [-2, -1, 0, 1, 2, 3], cycles: [1, 2, 3, 4], severites: [0.3, 0.5, 0.7, 1.0] };
+const RUNS_OPT = 150;
+let resOptParSeg = {};   // id segment -> { seg, sortie } du dernier calcul
+
+function renderOptimisation() {
+  // panneau « espace de recherche » (affiché une fois)
+  const esp = $('optEspace');
+  if (esp && !esp.dataset.rendu) {
+    esp.dataset.rendu = '1';
+    esp.innerHTML = `
+      <div class="opt-grille-ligne"><span class="lbl">Taille M</span><span class="val">${GRILLE_OPT.Ms.join(', ')}</span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Décalage x</span><span class="val">${GRILLE_OPT.xs.join(', ')} <span class="hint">(borné par boundsX(M))</span></span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Cycles</span><span class="val">${GRILLE_OPT.cycles.join(', ')}</span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Sévérité du scoring</span><span class="val">${GRILLE_OPT.severites.map(s => (s * 100) + '%').join(', ')}</span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Cotisation c (par segment)</span><span class="val">${SEGMENTS.map(s => fmtM(s.c)).join(' · ')}</span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Runs Monte Carlo</span><span class="val">${RUNS_OPT} (balayage) · 1000 (finales)</span></div>
+      <div class="opt-grille-ligne"><span class="lbl">Paramètres SFD</span><span class="val">taux avances 18% · rémun. dépôts 5% · cap 15% du pot</span></div>`;
+  }
+  // cartes de segments (rendues une fois, mises à jour à la demande)
+  const host = $('segCards');
+  if (host && !host.dataset.rendu) {
+    host.dataset.rendu = '1';
+    host.innerHTML = SEGMENTS.map(s => `
+      <div class="seg-card" id="segc_${s.id}">
+        <div class="seg-card-hd">
+          <div>
+            <div class="seg-card-nom">${s.nom}</div>
+            <div class="seg-card-sub">taux de fuite ${(s.p_fuite * 100).toFixed(0)}% · cotisation ${fmtM(s.c)}</div>
+          </div>
+          <button class="btn big seg-opt-btn" data-seg="${s.id}">Optimiser ce segment</button>
+        </div>
+        <div class="seg-card-body" id="segb_${s.id}"><p class="muted">Cliquez « Optimiser ce segment » pour lancer la recherche (≈ 15–20 s).</p></div>
+      </div>`).join('');
+    host.querySelectorAll('.seg-opt-btn').forEach(b => b.addEventListener('click', () => optimiserSegment(b.dataset.seg)));
+  }
 }
 
-function bandeRow(b) {
-  return `<div class="bande" data-k="${b.k}">
-    <div class="bande-tete"><span class="bande-nom">${b.nom}</span>${b.hint ? `<span class="bande-hint">${b.hint}</span>` : ''}<span class="bande-val" id="bv_${b.k}"></span></div>
-    <div class="bande-rail">
-      <input type="range" class="bande-lo" id="blo_${b.k}" min="${b.min}" max="${b.max}" step="${b.pas}" value="${b.lo}">
-      <input type="range" class="bande-hi" id="bhi_${b.k}" min="${b.min}" max="${b.max}" step="${b.pas}" value="${b.hi}">
-    </div></div>`;
-}
-function syncBande(b) {
-  let lo = +$('blo_' + b.k).value, hi = +$('bhi_' + b.k).value;
-  if (lo > hi) { [lo, hi] = [hi, lo]; $('blo_' + b.k).value = lo; $('bhi_' + b.k).value = hi; }
-  b.lo = lo; b.hi = hi;
-  const n = rangeVals(b).length;
-  $('bv_' + b.k).textContent = lo === hi ? fmtB(lo, b.fmt) : `${fmtB(lo, b.fmt)} → ${fmtB(hi, b.fmt)} · ${n} val.`;
-}
-let cadrageRendu = false;
-function renderCadrageCtrls() {
-  if (cadrageRendu) return; cadrageRendu = true;
-  // curseur CAP unique (% du pot, la contrainte) + les bandes des autres leviers
-  const capRow = `<div class="bande cap-unique">
-    <div class="bande-tete"><span class="bande-nom">Cap SFD (% du pot)</span><span class="bande-hint">skin in the game — contrainte</span><span class="bande-val" id="bv_cap"></span></div>
-    <input type="range" id="cap_slider" min="${CAP.min}" max="${CAP.max}" step="${CAP.pas}" value="${CAP.val}" style="width:100%;accent-color:var(--acc)"></div>`;
-  $('cadrageBandes').innerHTML = capRow + BANDES.map(bandeRow).join('');
-  $('cap_slider').addEventListener('input', e => { CAP.val = +e.target.value; $('bv_cap').textContent = Math.round(CAP.val * 100) + '%'; });
-  $('bv_cap').textContent = Math.round(CAP.val * 100) + '%';
-  BANDES.forEach(b => {
-    ['blo_', 'bhi_'].forEach(pre => $(pre + b.k).addEventListener('input', () => { syncBande(b); }));
-    syncBande(b);
-  });
-}
-$('btnCadrageReset').addEventListener('click', () => {
-  CAP.val = 0.15; $('cap_slider').value = CAP.val; $('bv_cap').textContent = '15%';
-  const def = { Ms: [6, 12], cs: [1, 100000], durees: [1, 2], partsSurs: [0.55, 0.85], partsEpargnant: [0.30, 0.30], rDepots: [0.05, 0.05] };
-  BANDES.forEach(b => { [b.lo, b.hi] = def[b.k]; $('blo_' + b.k).value = b.lo; $('bhi_' + b.k).value = b.hi; syncBande(b); });
-});
-
-let dernierCadrage = null;
-function lancerCadrage() {
-  $('btnCadrage').textContent = 'Calcul…'; $('cadrageStatus').textContent = '';
+function optimiserSegment(id) {
+  const seg = SEGMENTS.find(s => s.id === id); if (!seg) return;
+  const btn = document.querySelector(`.seg-opt-btn[data-seg="${id}"]`);
+  if (btn) { btn.textContent = 'Calcul…'; btn.disabled = true; }
   setTimeout(() => {
-    const opts = { runs: 250, cibles: [0.90, 0.95, 0.99], caps: [CAP.val] };  // cap SFD = % du pot (contrainte)
-    BANDES.forEach(b => { opts[b.k] = rangeVals(b); });
-    const r = cadrageRisque({ ...PARAMS }, opts);
-    dernierCadrage = r;
-    renderCroise(r);
-    renderCadrageTable(r);
-    renderCadrageGagnante(r);
-    initResoudre();
-    $('btnCadrage').textContent = 'Lancer l\'optimisation';
-    $('cadrageStatus').textContent = `${r.rows.length} configurations évaluées` + (r.tronque ? ' (tronqué à 2000)' : '');
+    const r = optimiser({ ...PARAMS }, { segments: [{ nom: seg.nom, p_fuite: seg.p_fuite, c: seg.c }], runs: RUNS_OPT });
+    const sortie = r.segments[0];
+    resOptParSeg[id] = { seg, sortie };
+    renderSegResultat(id);
+    if (btn) { btn.textContent = 'Relancer'; btn.disabled = false; }
   }, 20);
 }
-$('btnCadrage').addEventListener('click', lancerCadrage);
 
-// OBJECTIF : minimiser le RÉSIDUEL (perte sèche non couvrable) PARMI les configs qui tiennent
-// la promesse cible ET respectent l'usure. Le cap SFD est fixé ; c et M sont déterminés.
-function renderCadrageGagnante(r) {
-  $('cadrageGagnanteCard').hidden = !(r.rows && r.rows.length);
-  majCible();
+// formate une config (optimale ou recommandée) en grille de KPI
+function cfgMetrics(seg, x, extra = []) {
+  const pot = (x.M - 1) * seg.c;
+  const kpis = [
+    ['Taille M', '' + x.M],
+    ['Décalage x', (x.x >= 0 ? '+' : '') + x.x],
+    ['Cycles', '' + x.n_cycles],
+    ['Sévérité', (x.severite * 100).toFixed(0) + '%'],
+    ['Promesse / pool', `<span class="${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span>`],
+    ['Perte résiduelle / pot', `<span class="${x.residuelPot <= 0.005 ? 'ok' : 'bad'}">${(x.residuelPot * 100).toFixed(2)}%</span>`],
+    ['Usure (≤24%)', `<span class="${x.usure <= 0.24 ? 'ok' : 'bad'}">${(x.usure * 100).toFixed(1)}%</span>`],
+    ['P&L net / pool', `<span class="${x.pnlNet > 0 ? 'ok' : 'bad'}">${fmtM(x.pnlNet)}</span>`],
+    ['Rémun. épargnant', fmtM(x.remunEparg)],
+    ...extra,
+  ];
+  return `<div class="cfg-grid2">${kpis.map(k => `<div class="cfg-kpi"><span class="lbl">${k[0]}</span><span class="val">${k[1]}</span></div>`).join('')}</div>`;
 }
-function cfgCard(titre, x) {
-  const pot = (x.M - 1) * x.c;
-  return `<div class="cfg-titre">${titre}</div>
-    <div class="cfg-grid">
-      <div class="cfg-kpi"><span class="lbl">Perte sèche / pool</span><span class="val ${x.residuel <= pot * 0.01 ? 'ok' : x.residuel <= pot * 0.05 ? '' : 'bad'}">${fmtM(x.residuel)}</span></div>
-      <div class="cfg-kpi"><span class="lbl">Promesse / pool</span><span class="val ${x.promesse >= 0.99 ? 'ok' : x.promesse >= 0.95 ? '' : 'bad'}">${(x.promesse * 100).toFixed(1)}%</span></div>
-      <div class="cfg-kpi"><span class="lbl">Cap SFD</span><span class="val">${fmtM(x.capAbs)} <span class="pp" style="font-weight:400">(${(x.capPot * 100).toFixed(0)}% du pot)</span></span></div>
-      <div class="cfg-kpi"><span class="lbl">Taille M</span><span class="val">${x.M}</span></div>
-      <div class="cfg-kpi"><span class="lbl">Cotisation</span><span class="val">${fmtM(x.c)}</span></div>
-      <div class="cfg-kpi"><span class="lbl">Durée</span><span class="val">${x.duree} cyc.</span></div>
-      <div class="cfg-kpi"><span class="lbl">Profils sûrs</span><span class="val">${(x.partSurs * 100).toFixed(0)}%</span></div>
-      <div class="cfg-kpi"><span class="lbl">Usure (≤24%)</span><span class="val ${x.usure <= 0.24 ? 'ok' : 'bad'}">${(x.usure * 100).toFixed(1)}%</span></div>
-    </div>`;
-}
-function majCible() {
-  const r = dernierCadrage; if (!r) return;
-  const cible = +$('cibleSlider').value;
-  $('cibleOut').textContent = (cible * 100).toFixed(0) + '%';
-  const ok = r.rows.filter(x => x.usureOk && x.promesse >= cible);
-  if (!ok.length) {
-    $('cadrageGagnante').innerHTML = '';
-    $('cadrageCible').innerHTML = `<p class="muted">Aucune configuration n'atteint ${(cible * 100).toFixed(0)}% de promesse en respectant l'usure, sur les plages choisies. Élargissez les bandes (M, profils sûrs, cotisation) ou baissez la cible.</p>`;
+
+function renderSegResultat(id) {
+  const o = resOptParSeg[id]; if (!o) return;
+  const { seg, sortie } = o;
+  const host = $('segb_' + id);
+  let html = '';
+
+  // ---- config OPTIMALE ----
+  if (!sortie.faisable || !sortie.optimale) {
+    html += `<div class="seg-bloc"><div class="cfg-titre">Configuration optimale</div>
+      <p class="seg-echec">Aucune configuration ne satisfait les contraintes (promesse ≥ 99 %, usure ≤ 24 %, perte/pot ≤ 0,5 %) pour ce segment.</p></div>`;
+    $('segb_' + id).innerHTML = html;
     return;
   }
-  // perte sèche minimale parmi celles qui tiennent la cible ; départage par promesse haute puis petit c
-  const best = ok.sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse || a.c - b.c)[0];
-  $('cadrageGagnante').innerHTML = cfgCard(`Perte sèche minimale pour viser ≥ ${(cible * 100).toFixed(0)}% de promesse`, best);
-  $('cadrageCible').innerHTML = '';
-}
-$('cibleSlider').addEventListener('input', () => { majCible(); if (dernierCadrage) majResoudre(); });
+  const opt = sortie.optimale;
+  html += `<div class="seg-bloc"><div class="cfg-titre">Configuration optimale <span class="hint">maximise le P&amp;L net/pool</span></div>
+    ${cfgMetrics(seg, opt)}
+    <div class="seg-pont"><button class="btn ghost pont-btn" data-seg="${id}" data-cfg="optimale">Charger dans l'exploration manuelle →</button></div></div>`;
 
-// TABLEAU CROISÉ c × M (au cap choisi) : chaque case = meilleure promesse pour ce couple (c, M),
-// (meilleure config sur les autres leviers). Couleur selon promesse ; grisé si usure dépassée.
-function renderCroise(r) {
-  if (!r.rows || !r.rows.length) { $('cadrageCroise').innerHTML = '<p class="muted">Lancez l\'optimisation.</p>'; return; }
-  const cs = [...new Set(r.rows.map(x => x.c))].sort((a, b) => a - b);
-  const Ms = [...new Set(r.rows.map(x => x.M))].sort((a, b) => a - b);
-  // pour chaque (c, M) : meilleure config (promesse max parmi usureOk ; sinon promesse max)
-  const cell = (c, M) => {
-    const sub = r.rows.filter(x => x.c === c && x.M === M);
-    if (!sub.length) return null;
-    const ok = sub.filter(x => x.usureOk);
-    return (ok.length ? ok : sub).sort((a, b) => b.promesse - a.promesse)[0];
-  };
-  const head = `<tr><th>c \\ M</th>${Ms.map(M => `<th>M=${M}</th>`).join('')}</tr>`;
-  const body = cs.map(c => `<tr><td>${fmtM(c)}</td>${Ms.map(M => {
-    const x = cell(c, M);
-    if (!x) return '<td>—</td>';
-    const cls = !x.usureOk ? 'cx-gris' : x.promesse >= 0.99 ? 'cx-ok' : x.promesse >= 0.95 ? 'cx-moy' : 'cx-bas';
-    return `<td class="cx ${cls}" title="${!x.usureOk ? 'usure ' + (x.usure * 100).toFixed(0) + '% > 24%' : 'perte sèche ' + fmtM(x.residuel)}">${(x.promesse * 100).toFixed(0)}%</td>`;
-  }).join('')}</tr>`).join('');
-  $('cadrageCroise').innerHTML = `<table class="data croise">${head}${body}</table>
-    <p class="cadrage-note">Promesse par couple (c, M) au cap ${(CAP.val * 100).toFixed(0)}%. Grisé = seuil d'usure dépassé. Survolez une case pour la perte sèche.</p>`;
+  // ---- ROBUSTESSE ----
+  const marge = sortie.marge_securite;
+  const margeTxt = marge == null ? 'n/d' : '≥ ' + Math.round(marge * 100) + '%';
+  const margeCls = (marge != null && marge >= 0.5) ? 'ok' : 'bad';
+  const ruptTxt = sortie.p_fuite_rupture == null ? 'aucune rupture observée sur le balayage (jusqu\'à +100 %)' : `fuite de rupture ≈ ${(sortie.p_fuite_rupture * 100).toFixed(1)}%`;
+  html += `<div class="seg-bloc"><div class="cfg-titre">Robustesse <span class="hint">promesse vs taux de fuite</span></div>
+    <canvas class="rob-canvas" id="robc_${id}" width="520" height="150"></canvas>
+    <div class="rob-meta"><span>${ruptTxt}</span><span class="rob-marge ${margeCls}">marge de sécurité ${margeTxt}</span></div></div>`;
+
+  // ---- config RECOMMANDÉE ----
+  if (sortie.recommandee) {
+    const rec = sortie.recommandee;
+    const extra = [['Marge de sécurité', `<span class="ok">${Math.round(rec.marge_securite * 100)}%</span>`]];
+    html += `<div class="seg-bloc"><div class="cfg-titre">Configuration recommandée <span class="hint">robuste, marge ≥ 50 %</span></div>
+      ${cfgMetrics(seg, rec, extra)}
+      <div class="seg-pont"><button class="btn ghost pont-btn" data-seg="${id}" data-cfg="recommandee">Charger dans l'exploration manuelle →</button></div></div>`;
+  } else {
+    html += `<div class="seg-bloc"><div class="cfg-titre">Configuration recommandée</div>
+      <p class="seg-echec">Aucune config robuste à marge ≥ 50 % — ne pas pitcher cette config, elle casse au premier choc.</p></div>`;
+  }
+
+  host.innerHTML = html;
+  // graphe robustesse
+  drawRobustesse(id, sortie.robustesse, seg.p_fuite);
+  // pont
+  host.querySelectorAll('.pont-btn').forEach(b => b.addEventListener('click', () => chargerDansExploration(b.dataset.seg, b.dataset.cfg)));
 }
 
-// LECTURE INVERSÉE : on fixe deux leviers, on résout le troisième (perte sèche min, promesse cible tenue).
-function initResoudre() {
-  $('cadrageResoudreCard').hidden = false;
-  ['res_levier', 'res_M', 'res_c', 'res_d'].forEach(id => { const el = $(id); if (el && !el._wired) { el._wired = true; el.addEventListener('input', majResoudre); } });
-  majResoudre();
+// mini-graphe : promesse (y, 0–100%) vs p_fuite (x) sur le balayage de robustesse[]
+function drawRobustesse(id, pts, pfBase) {
+  const cv = $('robc_' + id); if (!cv || !pts || !pts.length) return;
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height; ctx.clearRect(0, 0, W, H);
+  const padL = 40, padR = 12, padT = 12, padB = 24;
+  const xs = pts.map(p => p.p_fuite), ys = pts.map(p => p.promesse);
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const ymin = Math.min(0.9, Math.min(...ys)), ymax = 1;
+  const px = v => padL + (xmax > xmin ? (v - xmin) / (xmax - xmin) : 0.5) * (W - padL - padR);
+  const py = v => padT + (1 - (v - ymin) / (ymax - ymin)) * (H - padT - padB);
+  // grille + axes
+  ctx.strokeStyle = '#f3f4f6'; ctx.fillStyle = '#9ca3af'; ctx.font = '10px Inter,sans-serif'; ctx.lineWidth = 1;
+  ctx.textAlign = 'right';
+  for (let g = 0; g <= 2; g++) { const yv = ymin + g / 2 * (ymax - ymin); const yy = py(yv); ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke(); ctx.fillText((yv * 100).toFixed(0) + '%', padL - 5, yy + 3); }
+  // seuil 99%
+  if (0.99 >= ymin) { const y99 = py(0.99); ctx.strokeStyle = '#dc2626'; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(padL, y99); ctx.lineTo(W - padR, y99); ctx.stroke(); ctx.setLineDash([]); }
+  // courbe promesse
+  ctx.strokeStyle = 'var(--acc)'; ctx.strokeStyle = '#0f4c4a'; ctx.lineWidth = 2; ctx.beginPath();
+  pts.forEach((p, i) => { const X = px(p.p_fuite), Y = py(p.promesse); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }); ctx.stroke();
+  ctx.fillStyle = '#0f4c4a'; pts.forEach(p => { ctx.beginPath(); ctx.arc(px(p.p_fuite), py(p.promesse), 2.5, 0, 2 * Math.PI); ctx.fill(); });
+  // marqueur p_fuite du segment
+  ctx.strokeStyle = '#9ca3af'; ctx.setLineDash([2, 2]); ctx.beginPath(); ctx.moveTo(px(pfBase), padT); ctx.lineTo(px(pfBase), H - padB); ctx.stroke(); ctx.setLineDash([]);
+  // labels x (min/max et base)
+  ctx.fillStyle = '#9ca3af'; ctx.textAlign = 'left'; ctx.fillText((xmin * 100).toFixed(0) + '%', padL, H - 8);
+  ctx.textAlign = 'right'; ctx.fillText((xmax * 100).toFixed(0) + '%', W - padR, H - 8);
+  ctx.textAlign = 'center'; ctx.fillText('taux de fuite', W / 2, H - 8);
 }
-function majResoudre() {
-  const r = dernierCadrage; if (!r) return;
-  const levier = $('res_levier').value;   // 'cs' | 'Ms' | 'durees'
-  const M = +$('res_M').value, c = +$('res_c').value, d = +$('res_d').value;
-  $('res_M_out').textContent = M; $('res_c_out').textContent = fmtB(c, 'k'); $('res_d_out').textContent = d;
-  // masquer le curseur du levier qu'on résout
-  $('res_M_wrap').style.opacity = levier === 'Ms' ? .35 : 1;
-  $('res_c_wrap').style.opacity = levier === 'cs' ? .35 : 1;
-  $('res_d_wrap').style.opacity = levier === 'durees' ? .35 : 1;
-  const cible = +$('cibleSlider').value;
-  // candidats : on fixe les deux leviers NON résolus (au plus proche disponible dans la grille)
-  const near = (vals, v) => vals.reduce((b, x) => Math.abs(x - v) < Math.abs(b - v) ? x : b, vals[0]);
-  const csG = [...new Set(r.rows.map(x => x.c))], MsG = [...new Set(r.rows.map(x => x.M))], dsG = [...new Set(r.rows.map(x => x.duree))];
-  let sub = r.rows.slice();
-  if (levier !== 'Ms') sub = sub.filter(x => x.M === near(MsG, M));
-  if (levier !== 'cs') sub = sub.filter(x => x.c === near(csG, c));
-  if (levier !== 'durees') sub = sub.filter(x => x.duree === near(dsG, d));
-  const ok = sub.filter(x => x.usureOk && x.promesse >= cible).sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse);
-  const nomLevier = levier === 'cs' ? 'cotisation' : levier === 'Ms' ? 'taille M' : 'durée';
-  if (!ok.length) { $('cadrageResoudre').innerHTML = `<p class="muted">Aucune valeur de ${nomLevier} ne tient ${(cible * 100).toFixed(0)}% (usure OK) avec ces réglages. Baissez la cible ou élargissez la bande de ${nomLevier}.</p>`; return; }
-  const best = ok[0];
-  const val = levier === 'cs' ? fmtM(best.c) : levier === 'Ms' ? best.M : best.duree + ' cycle(s)';
-  $('cadrageResoudre').innerHTML = `<p class="resoudre-reponse">Optimal : <b>${nomLevier} = ${val}</b></p>` + cfgCard(`Vu cap ${(CAP.val * 100).toFixed(0)}% + les leviers fixés`, best);
-}
-$('res_levier') && $('res_levier').addEventListener('change', majResoudre);
 
-function renderCadrageTable(r) {
-  // triées par perte sèche croissante (objectif), parmi celles qui respectent l'usure
-  const top = r.rows.slice().filter(x => x.usureOk).sort((a, b) => a.residuel - b.residuel || b.promesse - a.promesse).slice(0, 12);
-  if (!top.length) { $('cadrageTable').innerHTML = '<p class="muted">Aucune configuration ne respecte le seuil d\'usure sur cette grille.</p>'; return; }
-  const tb = top.map(x => `<tr><td>${fmtM(x.residuel)}</td><td class="${x.promesse >= 0.99 ? 'g' : x.promesse >= 0.95 ? '' : 'r'}">${(x.promesse * 100).toFixed(1)}%</td><td>${x.M}</td><td>${fmtM(x.c)}</td><td>${(x.partSurs * 100).toFixed(0)}%</td><td>${x.duree}</td><td>${(x.rDepot * 100).toFixed(0)}%</td><td>${(x.usure * 100).toFixed(1)}%</td><td>${fmtM(x.pnlPool)}</td></tr>`).join('');
-  $('cadrageTable').innerHTML = `<table class="data"><thead><tr><th>Perte sèche</th><th>Promesse/pool</th><th>M</th><th>Cotis.</th><th>Sûrs</th><th>Cycles</th><th>Rém.dép.</th><th>Usure</th><th>P&L/pool</th></tr></thead><tbody>${tb}</tbody></table>`;
+// ============ LE PONT : mode 2 -> mode 1 ============
+// Injecte la config (optimale | recommandée) d'un segment dans PARAMS, met à jour les curseurs,
+// bascule sur l'Exploration et affiche un bandeau de rappel.
+function chargerDansExploration(id, quelle) {
+  const o = resOptParSeg[id]; if (!o) return;
+  const cfg = quelle === 'recommandee' ? o.sortie.recommandee : o.sortie.optimale;
+  if (!cfg) return;
+  const seg = o.seg;
+  // injection des leviers de la config (les paramètres SFD négociés restent par défaut)
+  PARAMS.m_membres = cfg.M;
+  majBornesX();   // recale les bornes de x sur le nouveau M avant d'imposer x
+  PARAMS.x_tours_emprunteurs = cfg.x;
+  PARAMS.n_cycles = cfg.n_cycles;
+  PARAMS.part_eligibles_enchere = cfg.severite;
+  PARAMS.p_fuite_base = seg.p_fuite;
+  PARAMS.c = seg.c;
+  PARAMS.deux_populations = true;   // le modèle d'optimisation suppose deux populations
+  syncParametres();   // reflète tout dans les curseurs + recalcule garde-fous
+  // bandeau de rappel (config issue de l'optimisation)
+  const bd = $('exploBandeau'), tx = $('exploBandeauTxt');
+  if (bd && tx) {
+    tx.innerHTML = `Config issue de l'optimisation — segment <b>${seg.nom}</b>, taux de fuite = ${(seg.p_fuite * 100).toFixed(0)}% (config ${quelle === 'recommandee' ? 'recommandée' : 'optimale'}). Lancez telle quelle ou ajustez.`;
+    bd.hidden = false;
+  }
+  montrerOnglet('parametres');
 }
+$('exploBandeauX') && $('exploBandeauX').addEventListener('click', () => { $('exploBandeau').hidden = true; });
 
 // ---- init ----
 PARAMS._runs = 80;
 renderParametres();
-renderCadrageCtrls();   // peuple les contrôles de la page Cadrage dès le départ (sinon page vide)
+renderOptimisation();   // peuple l'onglet Optimisation (espace de recherche + cartes segments)
+majGardeFous();         // encart garde-fous initial (avant tout run)
 $('o_runs').textContent = PARAMS._runs;
 $('c_runs').value = PARAMS._runs;
 lancer();
