@@ -399,6 +399,39 @@ const GRILLE_OPT = { Ms: [4, 6, 8, 10, 12, 15, 20], xs: [-2, -1, 0, 1, 2, 3], cy
 const RUNS_OPT = 150;
 let resOptParSeg = {};   // id segment -> { seg, sortie } du dernier calcul
 
+// ---- carte PERSONNALISÉE : état complet des contrôles éditables ----
+// segment + grille balayée + paramètres SFD + contraintes. Lu au clic et passé tel quel à optimiser().
+const PERSO = {
+  p_fuite: 0.06, c: 25000,                                  // segment
+  Ms: new Set(GRILLE_OPT.Ms), xs: new Set(GRILLE_OPT.xs),   // grille (cases cochées)
+  cycles: new Set(GRILLE_OPT.cycles), severites: new Set(GRILLE_OPT.severites),
+  cap_pct_pot: 0.15, r_sfd: 0.18, r_depot: 0.05,            // SFD
+  promesse: 0.99, usure: 0.24, residuelPot: 0.005, marge: 0.50, // contraintes
+};
+// curseurs de la carte perso : clé d'état, libellé, min/max/pas (échelle ×1 ou ×100 pour les %), format
+const PERSO_SLIDERS = [
+  // segment
+  { sec: 'seg', k: 'p_fuite', nom: 'Taux de fuite', min: 0.02, max: 0.30, step: 0.01, fmt: 'pct' },
+  { sec: 'seg', k: 'c', nom: 'Cotisation c', min: 1000, max: 100000, step: 1000, fmt: 'k' },
+  // SFD
+  { sec: 'sfd', k: 'cap_pct_pot', nom: 'Cap SFD (% du pot)', min: 0.05, max: 0.40, step: 0.01, fmt: 'pct' },
+  { sec: 'sfd', k: 'r_sfd', nom: 'Taux SFD (r_sfd)', min: 0.06, max: 0.30, step: 0.01, fmt: 'pct' },
+  { sec: 'sfd', k: 'r_depot', nom: 'Rémunération dépôts (r_depot)', min: 0, max: 0.10, step: 0.01, fmt: 'pct' },
+  // contraintes
+  { sec: 'ctr', k: 'promesse', nom: 'Promesse cible', min: 0.90, max: 1.00, step: 0.005, fmt: 'pct' },
+  { sec: 'ctr', k: 'usure', nom: 'Usure max', min: 0.15, max: 0.30, step: 0.01, fmt: 'pct' },
+  { sec: 'ctr', k: 'residuelPot', nom: 'Perte résiduelle max (% pot)', min: 0, max: 0.02, step: 0.001, fmt: 'pct2' },
+  { sec: 'ctr', k: 'marge', nom: 'Marge de sécurité min', min: 0, max: 1.00, step: 0.05, fmt: 'pct' },
+];
+// groupes de chips (dimensions de la grille balayée)
+const PERSO_CHIPS = [
+  { k: 'Ms', nom: 'Tailles M', vals: GRILLE_OPT.Ms, lib: v => '' + v },
+  { k: 'xs', nom: 'Décalages x', vals: GRILLE_OPT.xs, lib: v => (v >= 0 ? '+' : '') + v, hint: 'borné par boundsX(M)' },
+  { k: 'cycles', nom: 'Cycles', vals: GRILLE_OPT.cycles, lib: v => '' + v },
+  { k: 'severites', nom: 'Sévérités', vals: GRILLE_OPT.severites, lib: v => (v * 100) + '%' },
+];
+const fmtPersoVal = (v, f) => f === 'pct' ? (v * 100).toFixed(1).replace(/\.0$/, '') + '%' : f === 'pct2' ? (v * 100).toFixed(2) + '%' : f === 'k' ? fmt0(v) : v;
+
 function renderOptimisation() {
   // panneau « espace de recherche » (affiché une fois)
   const esp = $('optEspace');
@@ -417,7 +450,7 @@ function renderOptimisation() {
   const host = $('segCards');
   if (host && !host.dataset.rendu) {
     host.dataset.rendu = '1';
-    host.innerHTML = SEGMENTS.map(s => `
+    host.innerHTML = renderPersoCard() + SEGMENTS.map(s => `
       <div class="seg-card" id="segc_${s.id}">
         <div class="seg-card-hd">
           <div>
@@ -429,19 +462,85 @@ function renderOptimisation() {
         <div class="seg-card-body" id="segb_${s.id}"><p class="muted">Cliquez « Optimiser ce segment » pour lancer la recherche (≈ 15–20 s).</p></div>
       </div>`).join('');
     host.querySelectorAll('.seg-opt-btn').forEach(b => b.addEventListener('click', () => optimiserSegment(b.dataset.seg)));
+    attachPersoControls();
   }
 }
 
+// ---- carte PERSONNALISÉ : HTML + branchement des contrôles ----
+function persoSliderRow(s) {
+  const val = s.fmt === 'k' ? valToLog(PERSO[s.k], s.min, s.max) : PERSO[s.k];   // c en log, le reste linéaire
+  const range = s.fmt === 'k'
+    ? `<input type="range" id="perso_${s.k}" min="0" max="${LOG_STEPS}" step="1" value="${val}">`
+    : `<input type="range" id="perso_${s.k}" min="${s.min}" max="${s.max}" step="${s.step}" value="${PERSO[s.k]}">`;
+  return `<div class="perso-row"><div class="pp-nom">${s.nom}</div>
+    <div class="perso-ctrl">${range}<span class="pp-val" id="persov_${s.k}">${fmtPersoVal(PERSO[s.k], s.fmt)}</span></div></div>`;
+}
+function persoChipsGroup(g) {
+  const chips = g.vals.map(v => `<button type="button" class="chip ${PERSO[g.k].has(v) ? 'on' : ''}" data-dim="${g.k}" data-val="${v}">${g.lib(v)}</button>`).join('');
+  return `<div class="perso-chips-row"><div class="pp-nom">${g.nom}${g.hint ? `<span class="chip-hint">${g.hint}</span>` : ''}</div><div class="perso-chips">${chips}</div></div>`;
+}
+function renderPersoCard() {
+  const sec = k => PERSO_SLIDERS.filter(s => s.sec === k).map(persoSliderRow).join('');
+  return `
+    <div class="seg-card seg-perso" id="segc_perso">
+      <div class="seg-card-hd">
+        <div>
+          <div class="seg-card-nom">Personnalisé</div>
+          <div class="seg-card-sub">définissez segment, grille explorée, paramètres SFD et contraintes, puis lancez</div>
+        </div>
+        <button class="btn big seg-opt-btn" data-seg="perso" id="persoBtn">Optimiser (config personnalisée)</button>
+      </div>
+      <div class="perso-grid">
+        <div class="perso-sec"><h4>Segment</h4>${sec('seg')}</div>
+        <div class="perso-sec"><h4>Paramètres SFD</h4>${sec('sfd')}</div>
+        <div class="perso-sec" style="grid-column:1/-1"><h4>Grille explorée par l'optimiseur <span class="chip-hint">au moins une valeur par dimension</span></h4>${PERSO_CHIPS.map(persoChipsGroup).join('')}</div>
+        <div class="perso-sec" style="grid-column:1/-1"><h4>Contraintes</h4><div class="perso-grid" style="margin:0">${sec('ctr')}</div></div>
+      </div>
+      <div class="seg-card-body" id="segb_perso"><p class="muted">Réglez les contrôles ci-dessus puis cliquez « Optimiser (config personnalisée) » (≈ 15–20 s).</p></div>
+    </div>`;
+}
+function attachPersoControls() {
+  PERSO_SLIDERS.forEach(s => {
+    const el = $('perso_' + s.k); if (!el) return;
+    el.addEventListener('input', e => {
+      PERSO[s.k] = s.fmt === 'k' ? logToVal(+e.target.value, s.min, s.max) : +e.target.value;
+      $('persov_' + s.k).textContent = fmtPersoVal(PERSO[s.k], s.fmt);
+    });
+  });
+  document.querySelectorAll('#segc_perso .chip').forEach(ch => ch.addEventListener('click', () => {
+    const dim = ch.dataset.dim, v = +ch.dataset.val, set = PERSO[dim];
+    if (set.has(v)) { if (set.size > 1) { set.delete(v); ch.classList.remove('on'); } }   // garde >=1 coché
+    else { set.add(v); ch.classList.add('on'); }
+  }));
+}
+
 function optimiserSegment(id) {
-  const seg = SEGMENTS.find(s => s.id === id); if (!seg) return;
+  // segment + opts : soit un segment figé (défauts moteur), soit la config perso (tous les contrôles).
+  const seg = id === 'perso'
+    ? { id: 'perso', nom: 'Personnalisé', p_fuite: PERSO.p_fuite, c: PERSO.c }
+    : SEGMENTS.find(s => s.id === id);
+  if (!seg) return;
+  const opts = id === 'perso'
+    ? {
+        segments: [{ nom: seg.nom, p_fuite: seg.p_fuite, c: seg.c }],
+        Ms: [...PERSO.Ms].sort((a, b) => a - b),
+        xs: [...PERSO.xs].sort((a, b) => a - b),
+        cycles: [...PERSO.cycles].sort((a, b) => a - b),
+        severites: [...PERSO.severites].sort((a, b) => a - b),
+        sfd: { cap_pct_pot: PERSO.cap_pct_pot, r_sfd_annuel: PERSO.r_sfd, r_depot_annuel: PERSO.r_depot },
+        contraintes: { promesse: PERSO.promesse, usure: PERSO.usure, residuelPot: PERSO.residuelPot, marge: PERSO.marge },
+        runs: RUNS_OPT,
+      }
+    : { segments: [{ nom: seg.nom, p_fuite: seg.p_fuite, c: seg.c }], runs: RUNS_OPT };
   const btn = document.querySelector(`.seg-opt-btn[data-seg="${id}"]`);
+  const labelDef = btn ? btn.textContent : 'Relancer';
   if (btn) { btn.textContent = 'Calcul…'; btn.disabled = true; }
   setTimeout(() => {
-    const r = optimiser({ ...PARAMS }, { segments: [{ nom: seg.nom, p_fuite: seg.p_fuite, c: seg.c }], runs: RUNS_OPT });
+    const r = optimiser({ ...PARAMS }, opts);
     const sortie = r.segments[0];
     resOptParSeg[id] = { seg, sortie };
     renderSegResultat(id);
-    if (btn) { btn.textContent = 'Relancer'; btn.disabled = false; }
+    if (btn) { btn.textContent = id === 'perso' ? 'Relancer (config personnalisée)' : 'Relancer'; btn.disabled = false; }
   }, 20);
 }
 

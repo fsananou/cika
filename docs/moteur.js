@@ -891,11 +891,17 @@ export function optimiser(base, opts = {}) {
   const runsGrille0 = opts.runs || 250;
   const runsFinal = 1000;
 
-  // Fixes SFD non optimisés (cap exprimé en % du pot -> nombre de cotisations)
-  const fixesSfd = (M) => ({ r_sfd_annuel: 0.18, r_depot_annuel: 0.05, cap_sfd_cotisations: 0.15 * (M - 1) });
+  // Fixes SFD (paramétrables via opts.sfd ; cap exprimé en % du pot -> nombre de cotisations)
+  const sfd = opts.sfd || {};
+  const rSfdOpt = sfd.r_sfd_annuel != null ? sfd.r_sfd_annuel : 0.18;
+  const rDepotOpt = sfd.r_depot_annuel != null ? sfd.r_depot_annuel : 0.05;
+  const capPotOpt = sfd.cap_pct_pot != null ? sfd.cap_pct_pot : 0.15;
+  const fixesSfd = (M) => ({ r_sfd_annuel: rSfdOpt, r_depot_annuel: rDepotOpt, cap_sfd_cotisations: capPotOpt * (M - 1) });
 
-  const CONTR = { promesse: 0.99, usure: 0.24, residuelPot: 0.005 };
-  const MARGE_MIN = 0.50;
+  // Contraintes (paramétrables via opts.contraintes)
+  const c0 = opts.contraintes || {};
+  const CONTR = { promesse: c0.promesse != null ? c0.promesse : 0.99, usure: c0.usure != null ? c0.usure : 0.24, residuelPot: c0.residuelPot != null ? c0.residuelPot : 0.005 };
+  const MARGE_MIN = c0.marge != null ? c0.marge : 0.50;
 
   // borne du nombre total d'évaluations : grille admissible (x dans boundsX) × segments
   let cellesGrille = 0;
