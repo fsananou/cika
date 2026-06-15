@@ -1,48 +1,49 @@
-# CIKA Credit Score Simulator — Netlify Deploy
+# CIKA Credit Score — Static Web App
 
-Static deployment of the Streamlit app using [stlite](https://github.com/whitphx/stlite),
-which runs Streamlit + Python entirely in the browser via Pyodide/WASM.
+Pure HTML/JS port of the CIKA credit-score simulator. No Python runtime, no
+build step, no server — drop it on any static host.
 
-## Files
+## What's in this folder
 
-- `index.html` — entry point; loads stlite and mounts the app
-- `cika_score_app.py` — the Streamlit app (copied from `../cika_score_app.py`)
-- `rosca_score_engine.py` — the scoring engine (copied from `../rosca_score_engine.py`)
-- `netlify.toml` — Netlify config (no build step; just serves files)
+- `index.html` — the entire app: Tailwind (CDN), Alpine.js (CDN), Plotly.js (CDN),
+  and the CIKA scoring engine ported from `rosca_score_engine.py`.
+- `netlify.toml` — Netlify config.
 
-The two `.py` files are **copies**. If you edit the originals in `../`, re-copy them
-into this folder before deploying:
+## What's built so far (Stage 1)
 
-```bash
-cp ../cika_score_app.py ../rosca_score_engine.py .
-```
+- Single-member scorer with the full 5-pillar formula matching
+  `rosca_score_engine.py::compute_score`.
+- Live recompute on every input change.
+- Three presets (Strong / Average / Risky).
+- Score ring, pillar breakdown bars, radar chart.
+- Methodology explainer tab.
+- Risk flags (prior default, star topology, post-payout default).
+- Credit stacking penalty.
 
 ## Deploy to Netlify
 
-### Option 1 — Drag and drop (fastest)
+### Drag-and-drop
 1. Go to https://app.netlify.com/drop
-2. Drag this `netlify_deploy/` folder onto the page
-3. Done. Netlify gives you a public URL.
+2. Drag this folder onto the page.
+3. Done.
 
-### Option 2 — GitHub-connected
-1. Commit this folder to a GitHub repo
-2. Netlify → "Add new site" → "Import from Git" → pick the repo
-3. Set **base directory** to `netlify_deploy` (or wherever this folder ends up)
-4. Build command: empty. Publish directory: `.`
+### Git-based
+1. Commit and push.
+2. Netlify → Add new site → Import from Git.
+3. Base directory: `cika-web`. Build command: (empty). Publish directory: `.`.
 
 ## Local test
 
 ```bash
-cd netlify_deploy
+cd cika-web
 python3 -m http.server 8000
-# then open http://localhost:8000
+# open http://localhost:8000
 ```
 
-First load takes 20–60s (downloading Python runtime + sklearn/pandas/numpy wheels).
-Subsequent loads are cached by the browser.
+Should load instantly — no Python wheels, no Pyodide.
 
-## Known limits
+## Next stages
 
-- First-load size is large (~50 MB). Fine for presentations, not ideal for casual visitors.
-- Monte Carlo PD* re-simulation will be slower than native Streamlit (browser CPU only).
-- If `scikit-learn` fails to load on Pyodide, the app falls back to skipping AUC/Brier (already handled in the code).
+- **Stage 2** — population simulator (generate N members, score distribution, default rate).
+- **Stage 3** — PD* logistic regression in JS, validation tab.
+- **Stage 4** — MC PD*, presets, raw-data export.

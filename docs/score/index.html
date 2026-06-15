@@ -1,58 +1,1221 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CIKA — Credit Score Simulator</title>
-    <style>
-      html, body, #root { height: 100%; margin: 0; padding: 0; }
-      #loading {
-        font-family: -apple-system, system-ui, sans-serif;
-        display: flex; align-items: center; justify-content: center;
-        height: 100%; flex-direction: column; gap: 12px; color: #444;
-      }
-      #loading .spinner {
-        width: 32px; height: 32px; border: 3px solid #ddd;
-        border-top-color: #ff4b4b; border-radius: 50%;
-        animation: spin 1s linear infinite;
-      }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      #error {
-        font-family: -apple-system, system-ui, sans-serif;
-        padding: 20px; color: #c00; white-space: pre-wrap;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="root">
-      <div id="loading">
-        <div class="spinner"></div>
-        <div>Loading CIKA Credit Score Simulator…</div>
-        <div style="font-size:12px;color:#888">First load downloads the Python runtime (~20–30s). Subsequent visits are cached and instant.</div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CIKA — Credit Score Simulator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="./cika_engine.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0b1220;          /* primary text / dark navy */
+      --ink-2: #1f2a44;
+      --muted: #5b6b87;
+      --line: #e4e9f2;
+      --line-2: #eef2f8;
+      --paper: #ffffff;
+      --canvas: #f7f8fb;
+      --brand: #0f4c4a;        /* deep teal — fintech, sober */
+      --brand-2: #14706c;
+      --brand-soft: #e6f0ef;
+      --gold: #b18a3a;         /* accent on big numbers */
+      --ok: #15803d;
+      --warn: #b45309;
+      --bad: #b91c1c;
+    }
+    html { -webkit-font-smoothing: antialiased; }
+    html, body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--canvas); color: var(--ink);
+      font-feature-settings: 'ss01', 'cv11';
+    }
+    .num { font-family: 'Fraunces', Georgia, serif; font-feature-settings: 'lnum', 'tnum'; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .label-xs { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+    .hero-bg { background: var(--ink); }
+    .card { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+    .card-tight { padding: 18px 20px; }
+    .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+    .divider { border-top: 1px solid var(--line-2); }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 6px; font-weight: 500; font-size: 13px; transition: all 0.15s; }
+    .btn-primary { background: var(--brand); color: white; }
+    .btn-primary:hover:not(:disabled) { background: var(--brand-2); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    .btn-ghost:hover { border-color: var(--ink-2); }
+    .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+    input[type=range] {
+      -webkit-appearance: none; appearance: none; height: 4px;
+      background: var(--line); border-radius: 999px; accent-color: var(--brand);
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 14px; height: 14px; border-radius: 999px; background: var(--brand);
+      border: 2px solid white; box-shadow: 0 0 0 1px var(--line);
+    }
+    input[type=number], select {
+      background: white; border: 1px solid var(--line);
+      border-radius: 4px; padding: 5px 8px; font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    input[type=number]:focus, select:focus { outline: none; border-color: var(--brand); }
+    input[type=checkbox] { accent-color: var(--brand); }
+    .pillar-bar { transition: width 0.45s cubic-bezier(0.4,0,0.2,1); }
+    .tab-active { border-bottom: 2px solid var(--ink); color: var(--ink); font-weight: 600; }
+    .tab-inactive { color: var(--muted); border-bottom: 2px solid transparent; }
+    .tab-inactive:hover { color: var(--ink); }
+    details > summary { list-style: none; cursor: pointer; }
+    details > summary::-webkit-details-marker { display: none; }
+    .chev { transition: transform 0.2s; display: inline-block; }
+    details[open] .chev { transform: rotate(90deg); }
+    .score-ring {
+      background: conic-gradient(
+        var(--ring-color, var(--brand)) calc(var(--score) * 1%),
+        var(--line) 0
+      );
+    }
+    /* Hairline data table */
+    .data-table { font-size: 12px; }
+    .data-table thead th {
+      font-weight: 600; color: var(--muted); text-transform: uppercase;
+      font-size: 10.5px; letter-spacing: 0.05em; border-bottom: 1px solid var(--line);
+      padding: 8px 10px; background: var(--canvas);
+    }
+    .data-table tbody td {
+      padding: 7px 10px; border-bottom: 1px solid var(--line-2);
+    }
+    .data-table tbody tr:hover { background: var(--canvas); }
+    .ticker {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 999px; background: #22c55e; display: inline-block; }
+  </style>
+</head>
+<body x-data="cikaApp()" x-cloak>
+  <!-- TOP BAR -->
+  <header class="hero-bg text-white border-b border-black/20">
+    <div class="max-w-7xl mx-auto px-6">
+      <!-- masthead -->
+      <div class="flex items-center justify-between py-4">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-md bg-white/10 flex items-center justify-center font-semibold text-sm tracking-tight">C</div>
+          <div>
+            <div class="font-semibold tracking-tight text-[15px]">CIKA</div>
+            <div class="text-[10.5px] uppercase tracking-widest text-white/50">Credit Score · Simulator</div>
+          </div>
+        </div>
+        <div class="hidden md:flex items-center gap-4 text-[11px]">
+          <span class="ticker text-white/60"><span class="dot"></span> live · static · no backend</span>
+          <span class="text-white/30">|</span>
+          <span class="ticker text-white/60">v.0.4 · stage 5</span>
+        </div>
       </div>
+      <!-- title block -->
+      <div class="pt-3 pb-7 max-w-3xl">
+        <div class="label-xs text-white/50 mb-2">Microfinance · ROSCA / Tontine credit scoring</div>
+        <h1 class="num text-[2.4rem] md:text-[3rem] leading-[1.05] font-medium tracking-tight mb-3">
+          Score, simulate, and stress-test community savings groups.
+        </h1>
+        <p class="text-[15px] text-white/70 max-w-2xl leading-relaxed">
+          A five-pillar credit-scoring model for ROSCA and tontine members — payment discipline,
+          allocation order, governance, liquidity, and social capital — with model-free and model-based
+          default-probability estimation.
+        </p>
+      </div>
+      <!-- nav -->
+      <nav class="flex gap-1 -mb-px">
+        <button @click="setTab('score')"
+                :class="tab === 'score' ? 'bg-white/10 text-white border-white' : 'text-white/60 border-transparent hover:text-white'"
+                class="px-4 py-2.5 text-[13px] font-medium border-b-2 transition">
+          Single member
+        </button>
+        <button @click="setTab('pop')"
+                :class="tab === 'pop' ? 'bg-white/10 text-white border-white' : 'text-white/60 border-transparent hover:text-white'"
+                class="px-4 py-2.5 text-[13px] font-medium border-b-2 transition">
+          Portfolio simulation
+        </button>
+        <button @click="setTab('about')"
+                :class="tab === 'about' ? 'bg-white/10 text-white border-white' : 'text-white/60 border-transparent hover:text-white'"
+                class="px-4 py-2.5 text-[13px] font-medium border-b-2 transition">
+          Methodology
+        </button>
+      </nav>
     </div>
-    <script type="module">
-      try {
-        const { mount } = await import(
-          "https://cdn.jsdelivr.net/npm/@stlite/browser@1.7.3/build/stlite.js"
-        );
+  </header>
 
-        mount(
-          {
-            requirements: ["altair"],
-            entrypoint: "cika_score_app.py",
-            files: {
-              "cika_score_app.py": { url: "./cika_score_app.py" },
-              "rosca_score_engine.py": { url: "./rosca_score_engine.py" },
+  <main class="max-w-7xl mx-auto px-6 py-8">
+
+    <!-- ===================== SCORE TAB ===================== -->
+    <section x-show="tab === 'score'" x-transition>
+      <div class="grid lg:grid-cols-5 gap-6">
+        <!-- INPUTS -->
+        <div class="lg:col-span-3 space-y-4">
+          <div class="card card-tight">
+            <div class="flex items-center justify-between mb-5 pb-4 border-b border-line-2" style="border-color: var(--line-2);">
+              <div>
+                <div class="label-xs mb-1">Form A · Member assessment</div>
+                <h2 class="text-[18px] font-semibold tracking-tight">Member profile</h2>
+              </div>
+              <div class="flex gap-1.5">
+                <button @click="loadPreset('strong')" class="btn btn-ghost text-[12px]">Strong</button>
+                <button @click="loadPreset('average')" class="btn btn-ghost text-[12px]">Average</button>
+                <button @click="loadPreset('risky')" class="btn btn-ghost text-[12px]">Risky</button>
+              </div>
+            </div>
+
+            <!-- Payment discipline group -->
+            <div class="space-y-3.5">
+              <div class="label-xs">Payment discipline</div>
+
+              <template x-for="f in inputs.pdis" :key="f.k">
+                <div class="grid grid-cols-12 gap-3 items-center">
+                  <label class="col-span-5 text-sm text-gray-700" x-text="f.label"></label>
+                  <input type="range" x-model.number="vals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-5 slider-track" />
+                  <input type="number" x-model.number="vals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                </div>
+              </template>
+            </div>
+
+            <hr class="my-5 border-gray-100" />
+
+            <!-- Allocation order group -->
+            <div class="space-y-4">
+              <div class="label-xs">Allocation order</div>
+              <template x-for="f in inputs.ordr" :key="f.k">
+                <div class="grid grid-cols-12 gap-3 items-center">
+                  <label class="col-span-5 text-sm text-gray-700" x-text="f.label"></label>
+                  <template x-if="f.type === 'select'">
+                    <select x-model="vals[f.k]"
+                            class="col-span-7 text-sm border border-gray-200 rounded px-2 py-1.5">
+                      <template x-for="opt in f.options" :key="opt.value">
+                        <option :value="opt.value" x-text="opt.label"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <template x-if="f.type === 'check'">
+                    <div class="col-span-7 flex items-center">
+                      <input type="checkbox" x-model="vals[f.k]"
+                             class="w-4 h-4 accent-indigo-600" />
+                      <span class="ml-2 text-xs text-gray-500" x-text="f.hint"></span>
+                    </div>
+                  </template>
+                  <template x-if="f.type === 'range'">
+                    <input type="range" x-model.number="vals[f.k]"
+                           :min="f.min" :max="f.max" :step="f.step"
+                           class="col-span-5 slider-track" />
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <hr class="my-5 border-gray-100" />
+
+            <!-- Governance group -->
+            <div class="space-y-4">
+              <div class="label-xs">Governance</div>
+              <template x-for="f in inputs.gov" :key="f.k">
+                <div class="grid grid-cols-12 gap-3 items-center">
+                  <label class="col-span-5 text-sm text-gray-700" x-text="f.label"></label>
+                  <template x-if="f.type === 'check'">
+                    <div class="col-span-7 flex items-center">
+                      <input type="checkbox" x-model="vals[f.k]" class="w-4 h-4 accent-indigo-600" />
+                      <span class="ml-2 text-xs text-gray-500" x-text="f.hint"></span>
+                    </div>
+                  </template>
+                  <template x-if="f.type === 'select'">
+                    <select x-model="vals[f.k]"
+                            class="col-span-7 text-sm border border-gray-200 rounded px-2 py-1.5">
+                      <template x-for="opt in f.options" :key="opt.value">
+                        <option :value="opt.value" x-text="opt.label"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <template x-if="f.type === 'range'">
+                    <input type="range" x-model.number="vals[f.k]"
+                           :min="f.min" :max="f.max" :step="f.step"
+                           class="col-span-5 slider-track" />
+                  </template>
+                  <template x-if="f.type === 'range'">
+                    <input type="number" x-model.number="vals[f.k]"
+                           :min="f.min" :max="f.max" :step="f.step"
+                           class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <hr class="my-5 border-gray-100" />
+
+            <!-- Liquidity group (bidding) -->
+            <div class="space-y-4">
+              <div class="flex items-center justify-between">
+                <div class="label-xs">Liquidity · bidding only</div>
+                <span class="text-xs text-gray-400">Skipped for random-order groups</span>
+              </div>
+              <template x-for="f in inputs.liq" :key="f.k">
+                <div class="grid grid-cols-12 gap-3 items-center"
+                     :class="vals.rtype !== 'bidding' && 'opacity-40 pointer-events-none'">
+                  <label class="col-span-5 text-sm text-gray-700" x-text="f.label"></label>
+                  <input type="range" x-model.number="vals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-5 slider-track" />
+                  <input type="number" x-model.number="vals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                </div>
+              </template>
+            </div>
+
+            <hr class="my-5 border-gray-100" />
+
+            <!-- Social capital -->
+            <div class="space-y-3">
+              <div class="label-xs">Social capital</div>
+              <div class="grid grid-cols-2 gap-3">
+                <template x-for="f in inputs.soc" :key="f.k">
+                  <label class="flex items-center gap-2 p-2.5 rounded-lg border border-gray-200 hover:border-indigo-300 cursor-pointer">
+                    <input type="checkbox" x-model="vals[f.k]" class="w-4 h-4 accent-indigo-600" />
+                    <span class="text-sm text-gray-700" x-text="f.label"></span>
+                  </label>
+                </template>
+              </div>
+            </div>
+
+            <!-- Risk flags (advanced) -->
+            <details class="mt-5 group">
+              <summary class="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 hover:text-gray-700">
+                <span class="chev">▶</span> Risk flags (advanced)
+              </summary>
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                <template x-for="f in inputs.flags" :key="f.k">
+                  <label class="flex items-center gap-2 p-2.5 rounded-lg border border-gray-200 hover:border-rose-300 cursor-pointer">
+                    <input type="checkbox" x-model="vals[f.k]" class="w-4 h-4 accent-rose-600" />
+                    <div>
+                      <div class="text-sm text-gray-800" x-text="f.label"></div>
+                      <div class="text-xs text-gray-500" x-text="f.hint"></div>
+                    </div>
+                  </label>
+                </template>
+                <div class="col-span-2 grid grid-cols-12 gap-3 items-center">
+                  <label class="col-span-5 text-sm text-gray-700">Concurrent ROSCAs (extra)</label>
+                  <input type="range" x-model.number="vals.extra_groups" min="0" max="5" step="1"
+                         class="col-span-5 slider-track" />
+                  <input type="number" x-model.number="vals.extra_groups" min="0" max="5" step="1"
+                         class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <!-- DECISION PANEL -->
+        <div class="lg:col-span-2 space-y-4">
+          <!-- Decision card · loan-planner aesthetic -->
+          <div class="card card-tight">
+            <div class="flex items-center justify-between mb-4">
+              <div class="label-xs">Decision summary</div>
+              <span class="chip" :style="`background: ${ringColor()}1a; color: ${ringColor()}`"
+                    x-text="ratingLabel()"></span>
+            </div>
+
+            <div class="flex items-end gap-4 mb-5">
+              <div class="num text-[64px] leading-none font-medium tracking-tight"
+                   :style="`color: ${ringColor()}`"
+                   x-text="result.score.toFixed(1)"></div>
+              <div class="pb-2">
+                <div class="text-[11px] text-[color:var(--muted)] uppercase tracking-wider">CIKA Score</div>
+                <div class="text-[12px] text-[color:var(--muted)] mono">/ 100.0</div>
+              </div>
+            </div>
+
+            <!-- horizontal ring as progress bar -->
+            <div class="h-1.5 rounded-full overflow-hidden" style="background: var(--line);">
+              <div class="h-full transition-all duration-500"
+                   :style="`width: ${result.score}%; background: ${ringColor()};`"></div>
+            </div>
+
+            <!-- supporting numbers -->
+            <div class="grid grid-cols-3 mt-5 divide-x" style="border-color: var(--line-2);">
+              <div class="pr-3">
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">On-time rate</div>
+                <div class="num text-[20px] mt-0.5" x-text="(+vals.otr*100).toFixed(0)+'%'"></div>
+              </div>
+              <div class="px-3">
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Avg. days late</div>
+                <div class="num text-[20px] mt-0.5" x-text="(+vals.al).toFixed(1)"></div>
+              </div>
+              <div class="pl-3">
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Rank slot</div>
+                <div class="num text-[20px] mt-0.5" x-text="vals.aord + ' / ' + vals.n_meetings"></div>
+              </div>
+            </div>
+
+            <template x-if="result.defaulted">
+              <div class="mt-4 p-3 rounded-md border" style="background: #fef2f2; border-color: #fecaca;">
+                <div class="text-[12px] font-semibold" style="color: var(--bad)">Post-payout default detected</div>
+                <div class="text-[11.5px] mt-0.5" style="color: #7f1d1d">Score forced to 0 by streak rule (≥3 missed meetings after payout).</div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Pillar breakdown — data-table style -->
+          <div class="card card-tight">
+            <div class="flex items-center justify-between mb-4">
+              <div class="label-xs">Pillar contribution</div>
+              <div class="ticker">5 components</div>
+            </div>
+            <div class="space-y-3">
+              <template x-for="p in pillarsView()" :key="p.k">
+                <div>
+                  <div class="flex items-baseline justify-between text-[13px] mb-1.5">
+                    <span style="color: var(--ink-2)" x-text="p.label"></span>
+                    <span class="mono text-[12px]">
+                      <span x-text="p.value.toFixed(1)"></span><span class="text-[color:var(--muted)]" x-text="' / '+p.max"></span>
+                    </span>
+                  </div>
+                  <div class="h-[6px] rounded-full overflow-hidden" style="background: var(--line);">
+                    <div class="pillar-bar h-full rounded-full"
+                         :style="`width: ${(p.value/p.max)*100}%; background: ${p.color};`"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Plotly radar -->
+          <div class="card p-4">
+            <div class="label-xs px-2 pt-2 mb-1">Profile shape</div>
+            <div id="radar" style="width: 100%; height: 280px;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== POPULATION TAB ===================== -->
+    <section x-show="tab === 'pop'" x-transition>
+      <div class="grid lg:grid-cols-5 gap-6">
+        <!-- POP INPUTS -->
+        <div class="lg:col-span-2 space-y-4">
+          <div class="card card-tight">
+            <div class="flex items-center justify-between mb-5 pb-4 border-b" style="border-color: var(--line-2);">
+              <div>
+                <div class="label-xs mb-1">Form B · Portfolio configuration</div>
+                <h2 class="text-[18px] font-semibold tracking-tight">Population parameters</h2>
+              </div>
+              <select x-model="popPreset" @change="loadPopPreset()" class="text-[12px]">
+                <option value="default">Scenario · Default</option>
+                <option value="stress">Scenario · High stress</option>
+                <option value="poor">Scenario · Low discipline</option>
+                <option value="strong">Scenario · Healthy</option>
+              </select>
+            </div>
+
+            <div class="space-y-3">
+              <template x-for="f in popInputs" :key="f.k">
+                <div class="grid grid-cols-12 gap-3 items-center">
+                  <label class="col-span-6 text-sm text-gray-700" x-text="f.label"></label>
+                  <input type="range" x-model.number="popVals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-4 slider-track" />
+                  <input type="number" x-model.number="popVals[f.k]"
+                         :min="f.min" :max="f.max" :step="f.step"
+                         class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                </div>
+              </template>
+            </div>
+
+            <!-- Advanced parameters -->
+            <details class="mt-4 group">
+              <summary class="flex items-center gap-2 label-xs hover:text-[color:var(--ink)]">
+                <span class="chev">▶</span> Advanced parameters
+              </summary>
+              <div class="mt-3 space-y-3">
+                <template x-for="f in popInputsAdv" :key="f.k">
+                  <div class="grid grid-cols-12 gap-3 items-center">
+                    <label class="col-span-6 text-sm text-gray-700" x-text="f.label"></label>
+                    <input type="range" x-model.number="popVals[f.k]"
+                           :min="f.min" :max="f.max" :step="f.step"
+                           class="col-span-4 slider-track" />
+                    <input type="number" x-model.number="popVals[f.k]"
+                           :min="f.min" :max="f.max" :step="f.step"
+                           class="col-span-2 text-sm border border-gray-200 rounded px-2 py-1 text-right" />
+                  </div>
+                </template>
+              </div>
+            </details>
+
+            <div class="mt-5 flex items-center gap-2">
+              <button @click="runSim()" :disabled="simRunning"
+                      class="btn btn-primary flex-1 justify-center py-2.5">
+                <span x-show="!simRunning">Run simulation →</span>
+                <span x-show="simRunning" x-text="`Running · ${(simProgress*100).toFixed(0)}%`"></span>
+              </button>
+            </div>
+            <p class="mt-2.5 ticker">
+              <span x-text="estMembers()"></span> members &nbsp;·&nbsp; est. ~<span x-text="estTime()"></span>
+            </p>
+          </div>
+
+          <!-- Summary as data row (no rainbow) -->
+          <div class="card card-tight" x-show="popResult.summary">
+            <div class="label-xs mb-4">Run summary</div>
+            <div class="grid grid-cols-2 gap-y-4 gap-x-6">
+              <div>
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Members</div>
+                <div class="num text-[24px] mt-0.5"
+                     x-text="popResult.summary?.n_members?.toLocaleString() ?? '—'"></div>
+              </div>
+              <div>
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Mean score</div>
+                <div class="num text-[24px] mt-0.5"
+                     x-text="popResult.summary ? popResult.summary.mean_score.toFixed(1) : '—'"></div>
+              </div>
+              <div>
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Default rate</div>
+                <div class="num text-[24px] mt-0.5" style="color: var(--bad)"
+                     x-text="popResult.summary ? (popResult.summary.default_rate*100).toFixed(1)+'%' : '—'"></div>
+              </div>
+              <div>
+                <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Bidding share</div>
+                <div class="num text-[24px] mt-0.5"
+                     x-text="popResult.summary ? (popResult.summary.bidding_share*100).toFixed(0)+'%' : '—'"></div>
+              </div>
+            </div>
+            <div class="mt-4 pt-3 ticker border-t" style="border-color: var(--line-2);"
+                 x-show="popResult.elapsedMs">
+              <span class="dot" style="background: var(--brand)"></span>
+              Completed in <span class="num" x-text="popResult.elapsedMs+' ms'"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- POP OUTPUTS -->
+        <div class="lg:col-span-3 space-y-4">
+
+          <!-- Empty state -->
+          <div class="card card-tight" x-show="!popResult.summary" style="padding: 56px 40px; text-align: center;">
+            <div class="num text-[36px] tracking-tight mb-1" style="color: var(--ink-2)">Run a simulation to begin.</div>
+            <p class="text-[13px] text-[color:var(--muted)] max-w-md mx-auto leading-relaxed">
+              Generate a synthetic ROSCA portfolio from the parameters on the left,
+              score every member with the five-pillar engine, and validate ranking power
+              against the simulated default outcome.
+            </p>
+          </div>
+
+          <div x-show="popResult.summary" class="space-y-4">
+            <!-- Sub-tab nav -->
+            <div class="flex gap-0 px-0 border-b" style="border-color: var(--line);">
+              <button @click="popTab='dist'" class="px-4 py-2 text-[13px] font-medium transition"
+                      :class="popTab==='dist' ? 'tab-active' : 'tab-inactive'">
+                Distribution
+              </button>
+              <button @click="popTab='val'; $nextTick(()=>redrawValCharts())" class="px-4 py-2 text-[13px] font-medium transition"
+                      :class="popTab==='val' ? 'tab-active' : 'tab-inactive'">
+                Validation · PD*
+              </button>
+              <button @click="popTab='raw'" class="px-4 py-2 text-[13px] font-medium transition"
+                      :class="popTab==='raw' ? 'tab-active' : 'tab-inactive'">
+                Raw data
+              </button>
+            </div>
+
+            <!-- Distribution sub-tab -->
+            <div x-show="popTab==='dist'" x-transition class="space-y-4">
+              <div class="card p-4">
+                <div class="label-xs px-2 pt-2 mb-1">Score distribution</div>
+                <div id="pop-dist" style="width: 100%; height: 320px;"></div>
+              </div>
+              <div class="card p-4">
+                <div class="label-xs px-2 pt-2 mb-1">Mean score by pillar</div>
+                <div id="pop-pillars" style="width: 100%; height: 280px;"></div>
+              </div>
+            </div>
+
+            <!-- Validation sub-tab -->
+            <div x-show="popTab==='val'" x-transition class="space-y-4">
+              <!-- Validation metrics -->
+              <div class="card card-tight">
+                <div class="flex items-center justify-between mb-4">
+                  <div>
+                    <div class="label-xs">Ranking quality</div>
+                    <div class="text-[12px] text-[color:var(--muted)] mt-0.5">
+                      PD* source: <span class="mono" x-text="pdSource === 'mc' ? 'Monte Carlo' : 'logistic regression'"></span>
+                    </div>
+                  </div>
+                  <div class="flex gap-2 items-center">
+                    <select x-show="mcInfo" x-model="pdSource" @change="onPdSourceChange()" class="text-[12px]">
+                      <option value="logistic">View · logistic PD*</option>
+                      <option value="mc">View · MC PD*</option>
+                    </select>
+                    <button @click="runMC()" :disabled="mcRunning" class="btn btn-ghost text-[12px]">
+                      <span x-show="!mcRunning">+ Add MC PD*</span>
+                      <span x-show="mcRunning" x-text="`MC · ${(mcProgress*100).toFixed(0)}%`"></span>
+                    </button>
+                  </div>
+                </div>
+                <div x-show="!validation && !fitInfo" class="text-[13px] text-[color:var(--muted)]">
+                  Logistic PD* fit pending. <button @click="fitPDStar()" class="underline" style="color: var(--brand)">Run fit now</button>
+                </div>
+                <div x-show="fitInfo && !fitInfo.ok" class="text-[13px]" style="color: var(--bad)"
+                     x-text="fitInfo && fitInfo.reason"></div>
+                <div x-show="validation" class="grid grid-cols-2 md:grid-cols-4 gap-y-4 gap-x-6">
+                  <div>
+                    <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Spearman ρ</div>
+                    <div class="num text-[28px] mt-0.5"
+                         x-text="validation?.spearman_rho?.toFixed(3) ?? '—'"></div>
+                    <div class="text-[11px] text-[color:var(--muted)] mt-0.5" x-text="rhoLabel(validation?.spearman_rho)"></div>
+                  </div>
+                  <div>
+                    <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">AUC</div>
+                    <div class="num text-[28px] mt-0.5"
+                         x-text="(!isNaN(validation?.auc) ? validation.auc.toFixed(3) : '—')"></div>
+                    <div class="text-[11px] text-[color:var(--muted)] mt-0.5">discrimination</div>
+                  </div>
+                  <div>
+                    <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">Score gap</div>
+                    <div class="num text-[28px] mt-0.5"
+                         x-text="validation ? validation.score_gap.toFixed(1) : '—'"></div>
+                    <div class="text-[11px] text-[color:var(--muted)] mt-0.5"
+                         x-text="validation ? `${validation.score_mean_non_defaulted.toFixed(1)} − ${validation.score_mean_defaulted.toFixed(1)}` : ''"></div>
+                  </div>
+                  <div>
+                    <div class="text-[10.5px] uppercase tracking-wider text-[color:var(--muted)]">PD* mean</div>
+                    <div class="num text-[28px] mt-0.5"
+                         x-text="validation ? (validation.pd_star_mean*100).toFixed(1)+'%' : '—'"></div>
+                    <div class="text-[11px] text-[color:var(--muted)] mt-0.5"
+                         x-text="validation ? `Brier ${validation.brier?.toFixed(3) ?? '—'}` : ''"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card p-4" x-show="validation">
+                <div class="label-xs px-2 pt-2 mb-1">Score vs PD* · per member</div>
+                <div id="pop-scatter" style="width: 100%; height: 360px;"></div>
+              </div>
+
+              <div class="card p-4" x-show="validation">
+                <div class="label-xs px-2 pt-2 mb-1">Mean score by PD* quintile</div>
+                <div id="pop-quintiles" style="width: 100%; height: 280px;"></div>
+              </div>
+            </div>
+
+            <!-- Raw data sub-tab -->
+            <div x-show="popTab==='raw'" x-transition class="space-y-4">
+              <div class="card card-tight">
+                <div class="flex items-center justify-between mb-3">
+                  <div>
+                    <div class="label-xs">Member-level data</div>
+                    <div class="text-[12px] text-[color:var(--muted)] mt-0.5">
+                      Showing first 100 of <span class="mono" x-text="popResult.summary?.n_members?.toLocaleString()"></span> members
+                    </div>
+                  </div>
+                  <button @click="downloadCsv()" class="btn btn-ghost text-[12px]">Download CSV ↓</button>
+                </div>
+                <div class="overflow-x-auto" style="max-height: 480px;">
+                  <table class="data-table min-w-full mono">
+                    <thead class="sticky top-0">
+                      <tr>
+                        <th>mid</th>
+                        <th>gid</th>
+                        <th>rtype</th>
+                        <th class="text-right">score</th>
+                        <th class="text-right">otr</th>
+                        <th class="text-right">al</th>
+                        <th class="text-right">ls</th>
+                        <th class="text-right">true_pd</th>
+                        <th class="text-right">pd* (logit)</th>
+                        <th class="text-right">pd* (MC)</th>
+                        <th>default</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(m, i) in (popResult.members||[]).slice(0,100)" :key="m.mid">
+                        <tr :class="m.defaulted && 'bg-rose-50/30'">
+                          <td class="" x-text="m.mid"></td>
+                          <td class="" x-text="m.gid"></td>
+                          <td class="" x-text="m.rtype"></td>
+                          <td class=" text-right tabular-nums" x-text="m.score.toFixed(1)"></td>
+                          <td class=" text-right tabular-nums" x-text="m.otr.toFixed(2)"></td>
+                          <td class=" text-right tabular-nums" x-text="m.al.toFixed(1)"></td>
+                          <td class=" text-right tabular-nums" x-text="m.ls"></td>
+                          <td class=" text-right tabular-nums" x-text="m.true_pd.toFixed(3)"></td>
+                          <td class=" text-right tabular-nums"
+                              x-text="fitInfo?.pdStar ? fitInfo.pdStar[i].toFixed(3) : '—'"></td>
+                          <td class=" text-right tabular-nums"
+                              x-text="mcInfo?.pdStar ? mcInfo.pdStar[i].toFixed(3) : '—'"></td>
+                          <td class="">
+                            <span x-show="m.defaulted" class="px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-xs">yes</span>
+                            <span x-show="!m.defaulted" class="text-gray-400">no</span>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== METHODOLOGY TAB ===================== -->
+    <section x-show="tab === 'about'" x-transition>
+      <div class="grid lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-1">
+          <div class="card card-tight">
+            <div class="label-xs mb-2">Document A · Methodology</div>
+            <h2 class="num text-[28px] leading-tight tracking-tight mb-3">How CIKA scores a member.</h2>
+            <p class="text-[13.5px] text-[color:var(--ink-2)] leading-relaxed">
+              The CIKA credit score is built from five additive pillars that sum to a maximum of
+              100 points. Each pillar reflects a behavioural or structural dimension of a member's
+              standing in their savings group.
+            </p>
+            <div class="divider mt-5 pt-5">
+              <div class="label-xs mb-2">Default rule</div>
+              <p class="text-[12.5px] text-[color:var(--ink-2)] leading-relaxed">
+                Members who miss <span class="mono">N</span> consecutive meetings <em>after</em>
+                receiving the pot have their full score forced to zero. The streak threshold is
+                configurable per simulation.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="lg:col-span-2 space-y-3">
+          <template x-for="p in methodology" :key="p.k">
+            <div class="card card-tight">
+              <div class="flex items-baseline justify-between mb-1">
+                <div class="label-xs" x-text="p.label"></div>
+                <div class="num text-[18px]" x-text="p.max + ' pts'"></div>
+              </div>
+              <p class="text-[13px] text-[color:var(--ink-2)] leading-relaxed" x-text="p.desc"></p>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <footer class="mt-14 pt-6 border-t flex items-center justify-between" style="border-color: var(--line);">
+      <div class="ticker">CIKA Credit Score · Static client-side simulator</div>
+      <div class="ticker">Engine ported from <span class="mono">rosca_score_engine.py</span></div>
+    </footer>
+  </main>
+
+  <script>
+    // Stage-1 single-member scorer is now in cika_engine.js (window.CIKA).
+    // This shim keeps the existing call site working.
+    function computeScore(v) { return window.CIKA.computeScoreSingle(v); }
+
+    // ─── Alpine app ──────────────────────────────────────────────────────────
+    function cikaApp() {
+      return {
+        tab: 'score',
+        setTab(t) { this.tab = t; if (t === 'score') queueMicrotask(() => this.redrawRadar()); },
+
+        inputs: {
+          pdis: [
+            { k: 'otr',        label: 'On-time payment rate',   min: 0, max: 1, step: 0.01 },
+            { k: 'al',         label: 'Avg. days late (when late)', min: 0, max: 30, step: 0.5 },
+            { k: 'ls',         label: 'Longest late streak (meetings)', min: 0, max: 12, step: 1 },
+            { k: 'rc',         label: 'Recent currency (low days-late)', min: 0, max: 1, step: 0.01 },
+            { k: 'p_verified', label: 'Share of payments verified', min: 0, max: 1, step: 0.01 },
+            { k: 'n_meetings', label: 'Meetings in cycle',      min: 6, max: 36, step: 1 },
+          ],
+          ordr: [
+            { k: 'rtype', label: 'Allocation type', type: 'select',
+              options: [
+                { value: 'bidding', label: 'Bidding (auction)' },
+                { value: 'random',  label: 'Random / rotation' },
+              ]},
+            { k: 'aord', label: 'Payout position (1 = first)', type: 'range',
+              min: 1, max: 20, step: 1 },
+            { k: 'slip', label: 'Post-payout slip', type: 'check',
+              hint: '2+ consecutive late meetings after receiving the pot' },
+          ],
+          gov: [
+            { k: 'rules',   label: 'Written group rules',     type: 'check', hint: 'Has formal bylaws' },
+            { k: 'san6',    label: 'Sanctions in last 6 meetings', type: 'range', min: 0, max: 6, step: 1 },
+            { k: 'sure',    label: 'Surety strength', type: 'select',
+              options: [
+                { value: 'none',   label: 'None' },
+                { value: 'weak',   label: 'Weak' },
+                { value: 'strong', label: 'Strong' },
+              ]},
+          ],
+          liq: [
+            { k: 'q_rank',  label: 'Bid-discount quantile (low = aggressive)', min: 0, max: 1, step: 0.01 },
+            { k: 'bid_iqr', label: 'Bid-discount spread (IQR)', min: 0, max: 0.4, step: 0.01 },
+          ],
+          soc: [
+            { k: 'rep',   label: 'Repeat-cycle history (5 pts)' },
+            { k: 'cent',  label: 'Network-central (4 pts)' },
+            { k: 'end_f', label: 'Foreman endorsement (3 pts)' },
+            { k: 'end_s', label: 'Strong-tie endorsement (3 pts)' },
+          ],
+          flags: [
+            { k: 'prior_default',  label: 'Prior default on record',
+              hint: 'Halves social-capital pillar' },
+            { k: 'star_topology',  label: 'Star-topology group',
+              hint: 'Closed-loop; -40% on governance' },
+            { k: 'defaulted_flag', label: 'Post-payout default',
+              hint: 'Forces total score to 0' },
+          ],
+        },
+
+        // Defaults = "Average member"
+        vals: {
+          otr: 0.85, al: 2.0, ls: 1, rc: 0.75, p_verified: 0.75, n_meetings: 12,
+          rtype: 'bidding', aord: 7, slip: false,
+          rules: true, san6: 0, sure: 'weak',
+          q_rank: 0.4, bid_iqr: 0.08,
+          rep: true, cent: false, end_f: true, end_s: false,
+          prior_default: false, star_topology: false, defaulted_flag: false,
+          extra_groups: 0,
+        },
+
+        result: { score: 0, s_pdis: 0, s_ordr: 0, s_gov: 0, s_liq: 0, s_soc: 0, defaulted: false },
+
+        init() {
+          // Watch all input changes
+          this.$watch('vals', () => this.recompute(), { deep: true });
+          this.recompute();
+          this.$nextTick(() => this.redrawRadar());
+        },
+
+        recompute() {
+          this.result = computeScore(this.vals);
+          this.$nextTick(() => this.redrawRadar());
+        },
+
+        loadPreset(p) {
+          const presets = {
+            strong: {
+              otr: 0.96, al: 0.5, ls: 0, rc: 0.92, p_verified: 0.95, n_meetings: 12,
+              rtype: 'bidding', aord: 10, slip: false,
+              rules: true, san6: 0, sure: 'strong',
+              q_rank: 0.65, bid_iqr: 0.04,
+              rep: true, cent: true, end_f: true, end_s: true,
+              prior_default: false, star_topology: false, defaulted_flag: false,
+              extra_groups: 0,
             },
-          },
-          document.getElementById("root"),
-        );
-      } catch (e) {
-        document.getElementById("root").innerHTML =
-          '<div id="error">Failed to load:\n' + (e && e.stack ? e.stack : e) + '</div>';
-        console.error(e);
-      }
-    </script>
-  </body>
+            average: {
+              otr: 0.85, al: 2.0, ls: 1, rc: 0.75, p_verified: 0.75, n_meetings: 12,
+              rtype: 'bidding', aord: 7, slip: false,
+              rules: true, san6: 0, sure: 'weak',
+              q_rank: 0.4, bid_iqr: 0.08,
+              rep: true, cent: false, end_f: true, end_s: false,
+              prior_default: false, star_topology: false, defaulted_flag: false,
+              extra_groups: 0,
+            },
+            risky: {
+              otr: 0.62, al: 8.0, ls: 4, rc: 0.30, p_verified: 0.40, n_meetings: 12,
+              rtype: 'random', aord: 2, slip: true,
+              rules: false, san6: 3, sure: 'none',
+              q_rank: 0.2, bid_iqr: 0.20,
+              rep: false, cent: false, end_f: false, end_s: false,
+              prior_default: true, star_topology: true, defaulted_flag: false,
+              extra_groups: 2,
+            },
+          };
+          Object.assign(this.vals, presets[p]);
+        },
+
+        ratingLabel() {
+          const s = this.result.score;
+          if (this.result.defaulted) return 'Defaulted';
+          if (s >= 80) return 'Excellent';
+          if (s >= 65) return 'Good';
+          if (s >= 50) return 'Fair';
+          if (s >= 35) return 'Weak';
+          return 'Poor';
+        },
+        ringColor() {
+          const s = this.result.score;
+          if (this.result.defaulted) return '#b91c1c';
+          if (s >= 65) return '#0f4c4a';   // brand teal
+          if (s >= 50) return '#14706c';
+          if (s >= 35) return '#b18a3a';   // gold
+          return '#b91c1c';
+        },
+
+        pillarsView() {
+          const r = this.result;
+          return [
+            { k: 'pdis', label: 'Payment discipline', value: r.s_pdis, max: 35, color: '#0f4c4a' },
+            { k: 'ordr', label: 'Allocation order',   value: r.s_ordr, max: 15, color: '#14706c' },
+            { k: 'gov',  label: 'Governance',         value: r.s_gov,  max: 20, color: '#1f2a44' },
+            { k: 'liq',  label: 'Liquidity',          value: r.s_liq,  max: 15, color: '#b18a3a' },
+            { k: 'soc',  label: 'Social capital',     value: r.s_soc,  max: 15, color: '#5b6b87' },
+          ];
+        },
+
+        redrawRadar() {
+          const el = document.getElementById('radar');
+          if (!el || typeof Plotly === 'undefined') return;
+          const p = this.pillarsView();
+          // Normalised to % of max so all axes are 0..100
+          const r = p.map(x => (x.value / x.max) * 100);
+          const theta = p.map(x => x.label);
+          Plotly.react(el, [{
+            type: 'scatterpolar',
+            r: [...r, r[0]],
+            theta: [...theta, theta[0]],
+            fill: 'toself',
+            line: { color: '#0f4c4a', width: 2 },
+            fillcolor: 'rgba(15,76,74,0.18)',
+            hovertemplate: '%{theta}: %{r:.0f}%<extra></extra>',
+          }], {
+            polar: {
+              radialaxis: { visible: true, range: [0, 100], tickfont: { size: 9, color: '#9ca3af' } },
+              angularaxis: { tickfont: { size: 10, color: '#374151' } },
+              bgcolor: 'rgba(0,0,0,0)',
+            },
+            margin: { l: 40, r: 40, t: 20, b: 20 },
+            paper_bgcolor: 'rgba(0,0,0,0)',
+            showlegend: false,
+            font: { family: 'Inter, system-ui, sans-serif' },
+          }, { displayModeBar: false, responsive: true });
+        },
+
+        // ─── Population tab state ────────────────────────────────────────────
+        popPreset: 'default',
+        simRunning: false,
+        simProgress: 0,
+        popResult: { members: null, summary: null, elapsedMs: null },
+        popTab: 'dist',
+        validation: null,
+        fitInfo: null,
+        methodology: [
+          { k: 'pdis', label: 'Payment discipline', max: 35,
+            desc: 'Weighted by recency. Rewards a high on-time rate (above a steep sigmoid threshold), penalises mean days-late, consecutive late streaks, and rewards low days-late currency.' },
+          { k: 'ordr', label: 'Allocation order', max: 15,
+            desc: 'Early payouts earn 30% of the pillar; mid-cycle 60%; late 100%. A post-payout late streak slashes the pillar by 80% in bidding groups.' },
+          { k: 'gov', label: 'Governance', max: 20,
+            desc: 'Written rules (sigmoid bonus), low recent sanctions (exponential decay), and surety strength (none / weak / strong → 0 / 3 / 6 pts). Star-topology groups lose 40%.' },
+          { k: 'liq', label: 'Liquidity', max: 15,
+            desc: 'Bidding groups only. Rewards consistent, moderate-discount bidding behaviour. Random-order groups receive 0 here.' },
+          { k: 'soc', label: 'Social capital', max: 15,
+            desc: 'Sum of binary flags: repeat-cycle (5), network-central (4), foreman endorsement (3), strong-tie endorsement (3). Halved for members with a prior default.' },
+        ],
+        mcInfo: null,
+        mcRunning: false,
+        mcProgress: 0,
+        pdSource: 'logistic',  // 'logistic' | 'mc'
+        mcRuns: 100,
+        popInputs: [
+          { k: 'n_groups',           label: 'Number of groups',         min: 1,  max: 1500, step: 1 },
+          { k: 'group_size_min',     label: 'Min members / group',      min: 3,  max: 30,   step: 1 },
+          { k: 'group_size_max',     label: 'Max members / group',      min: 3,  max: 50,   step: 1 },
+          { k: 'rtype_bidding_prob', label: 'Share of bidding groups',  min: 0,  max: 1,    step: 0.05 },
+          { k: 'p_ontime_mean',      label: 'Mean on-time rate',        min: 0.4,max: 0.99, step: 0.01 },
+          { k: 'stress_level',       label: 'Economic stress (0–1)',    min: 0,  max: 1,    step: 0.05 },
+          { k: 'within_group_corr',  label: 'Within-group shock corr.', min: 0,  max: 1,    step: 0.05 },
+          { k: 'post_slip_mean',     label: 'Mean post-payout slip',    min: 0,  max: 0.5,  step: 0.01 },
+          { k: 'streak_threshold',   label: 'Default streak length',    min: 2,  max: 6,    step: 1 },
+          { k: 'seed',               label: 'Random seed',              min: 1,  max: 9999, step: 1 },
+        ],
+        popInputsAdv: [
+          { k: 'rules_prob',        label: 'Groups with written rules',     min: 0, max: 1,   step: 0.05 },
+          { k: 'p_rep',             label: 'Repeat-cycle share',            min: 0, max: 1,   step: 0.05 },
+          { k: 'p_cent',            label: 'Network-central share',         min: 0, max: 1,   step: 0.05 },
+          { k: 'p_endf',            label: 'Foreman-endorsed share',        min: 0, max: 1,   step: 0.05 },
+          { k: 'p_prior_default',   label: 'Prior-default share',           min: 0, max: 0.5, step: 0.01 },
+          { k: 'p_star_topology',   label: 'Star-topology groups share',    min: 0, max: 0.6, step: 0.05 },
+          { k: 'p_multi_group',     label: 'Members in multiple ROSCAs',    min: 0, max: 0.6, step: 0.05 },
+          { k: 'p_payment_verified',label: 'Mean payment-verification share', min: 0.2, max: 1, step: 0.05 },
+        ],
+        popVals: {
+          n_groups: 50, group_size_min: 6, group_size_max: 20,
+          rtype_bidding_prob: 0.5, p_ontime_mean: 0.80,
+          stress_level: 0.0, within_group_corr: 0.2, post_slip_mean: 0.08,
+          streak_threshold: 3, seed: 42,
+          rules_prob: 0.75, p_rep: 0.45, p_cent: 0.30, p_endf: 0.25,
+          p_prior_default: 0.10, p_star_topology: 0.15, p_multi_group: 0.20,
+          p_payment_verified: 0.85,
+        },
+
+        estMembers() {
+          const v = this.popVals;
+          return Math.round(v.n_groups * (v.group_size_min + v.group_size_max) / 2).toLocaleString();
+        },
+        estTime() {
+          const n = (this.popVals.n_groups *
+                     (this.popVals.group_size_min + this.popVals.group_size_max) / 2);
+          // ~3-5 µs per member on modern laptops based on rough estimate
+          const ms = Math.max(50, n * 0.05);
+          return ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms/1000).toFixed(1)} s`;
+        },
+        loadPopPreset() {
+          const presets = {
+            default: { p_ontime_mean: 0.80, stress_level: 0.0, post_slip_mean: 0.08 },
+            stress:  { p_ontime_mean: 0.75, stress_level: 0.6, post_slip_mean: 0.15 },
+            poor:    { p_ontime_mean: 0.60, stress_level: 0.2, post_slip_mean: 0.20 },
+            strong:  { p_ontime_mean: 0.92, stress_level: 0.0, post_slip_mean: 0.05 },
+          };
+          Object.assign(this.popVals, presets[this.popPreset] || {});
+        },
+
+        async runSim() {
+          if (this.simRunning) return;
+          this.simRunning = true;
+          this.simProgress = 0;
+          await new Promise(r => setTimeout(r, 30));  // let UI update
+
+          const v = this.popVals;
+          const popParams = {
+            n_groups: v.n_groups,
+            group_size_min: v.group_size_min,
+            group_size_max: Math.max(v.group_size_max, v.group_size_min + 1),
+            rtype_bidding_prob: v.rtype_bidding_prob,
+            p_ontime_mean: v.p_ontime_mean,
+            post_slip_mean: v.post_slip_mean,
+            rules_prob: v.rules_prob,
+            p_rep: v.p_rep, p_cent: v.p_cent, p_endf: v.p_endf,
+            p_prior_default: v.p_prior_default,
+            p_star_topology: v.p_star_topology,
+            p_multi_group: v.p_multi_group,
+            p_payment_verified: v.p_payment_verified,
+          };
+          const macro = {
+            stress_level: v.stress_level,
+            within_group_corr: v.within_group_corr,
+          };
+
+          const t0 = performance.now();
+          try {
+            const res = window.CIKA.simulatePopulation(popParams, macro, {}, {
+              seed: v.seed | 0,
+              streak_threshold: v.streak_threshold | 0,
+              onProgress: p => { this.simProgress = p; },
+            });
+            const elapsed = Math.round(performance.now() - t0);
+            this.popResult = { ...res, elapsedMs: elapsed };
+            // Auto-fit PD* after simulation (fast; tens of ms)
+            this.validation = null;
+            this.fitInfo = null;
+            this.mcInfo = null;
+            this.pdSource = 'logistic';
+            this.$nextTick(() => {
+              this.redrawPopCharts();
+              this.fitPDStar();
+            });
+          } catch (e) {
+            console.error(e);
+            alert('Simulation failed: ' + e.message);
+          } finally {
+            this.simRunning = false;
+            this.simProgress = 1;
+          }
+        },
+
+        redrawPopCharts() {
+          if (!this.popResult.members) return;
+          const members = this.popResult.members;
+
+          // Score distribution: stacked histogram by default status
+          const scoresNon = members.filter(m => !m.defaulted).map(m => m.score);
+          const scoresDef = members.filter(m => m.defaulted).map(m => m.score);
+          const distEl = document.getElementById('pop-dist');
+          if (distEl) {
+            Plotly.react(distEl, [
+              {
+                type: 'histogram', x: scoresNon, name: 'Non-defaulters',
+                marker: { color: '#0f4c4a', opacity: 0.85 },
+                xbins: { start: 0, end: 100, size: 2.5 },
+              },
+              {
+                type: 'histogram', x: scoresDef, name: 'Defaulters',
+                marker: { color: '#b91c1c', opacity: 0.85 },
+                xbins: { start: 0, end: 100, size: 2.5 },
+              },
+            ], {
+              barmode: 'stack',
+              xaxis: { title: 'Score (0–100)', range: [0, 100] },
+              yaxis: { title: 'Members' },
+              margin: { l: 60, r: 20, t: 20, b: 50 },
+              paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+              font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+              legend: { orientation: 'h', y: 1.12 },
+            }, { displayModeBar: false, responsive: true });
+          }
+
+          // Mean by pillar
+          const pillars = ['s_pdis', 's_ordr', 's_gov', 's_liq', 's_soc'];
+          const labels = ['Payment discipline', 'Allocation order', 'Governance', 'Liquidity', 'Social capital'];
+          const maxes = [35, 15, 20, 15, 15];
+          const colors = ['#0f4c4a', '#14706c', '#1f2a44', '#b18a3a', '#5b6b87'];
+          const means = pillars.map(p => members.reduce((s, m) => s + m[p], 0) / members.length);
+          const meansPct = means.map((m, i) => (m / maxes[i]) * 100);
+
+          const pillarEl = document.getElementById('pop-pillars');
+          if (pillarEl) {
+            Plotly.react(pillarEl, [{
+              type: 'bar', x: labels, y: meansPct,
+              marker: { color: colors },
+              text: means.map((m, i) => `${m.toFixed(1)} / ${maxes[i]}`),
+              textposition: 'outside',
+              hovertemplate: '%{x}: %{y:.0f}% of pillar max<extra></extra>',
+            }], {
+              yaxis: { title: '% of pillar max', range: [0, 110] },
+              margin: { l: 60, r: 20, t: 20, b: 60 },
+              paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+              font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+            }, { displayModeBar: false, responsive: true });
+          }
+        },
+
+        // ─── PD* logistic fit + validation ──────────────────────────────────
+        fitPDStar() {
+          if (!this.popResult.members) return;
+          try {
+            const fit = window.CIKA.fitLogisticPDStar(this.popResult.members);
+            this.fitInfo = fit;
+            if (fit.ok) {
+              this.validation = window.CIKA.computeValidation(this.popResult.members, fit.pdStar);
+              if (this.popTab === 'val') this.$nextTick(() => this.redrawValCharts());
+            } else {
+              this.validation = null;
+            }
+          } catch (e) {
+            console.error(e);
+            this.fitInfo = { ok: false, reason: e.message };
+            this.validation = null;
+          }
+        },
+
+        rhoLabel(rho) {
+          if (rho == null || Number.isNaN(rho)) return '—';
+          if (rho >= 0.40) return '🟢 strong';
+          if (rho >= 0.20) return '🟡 moderate';
+          return '🔴 weak';
+        },
+
+        redrawValCharts() {
+          const pdStar = this.currentPdStar();
+          if (!this.validation || !pdStar) return;
+          const members = this.popResult.members;
+
+          // Scatter score vs PD*, colored by defaulted
+          const scatterEl = document.getElementById('pop-scatter');
+          if (scatterEl) {
+            const xNon = [], yNon = [], xDef = [], yDef = [];
+            for (let i = 0; i < members.length; i++) {
+              const m = members[i];
+              if (m.defaulted) { xDef.push(pdStar[i]); yDef.push(m.score); }
+              else             { xNon.push(pdStar[i]); yNon.push(m.score); }
+            }
+            Plotly.react(scatterEl, [
+              { x: xNon, y: yNon, mode: 'markers', type: 'scatter', name: 'Non-defaulters',
+                marker: { color: '#0f4c4a', size: 6, opacity: 0.45 } },
+              { x: xDef, y: yDef, mode: 'markers', type: 'scatter', name: 'Defaulters',
+                marker: { color: '#b91c1c', size: 6, opacity: 0.7 } },
+            ], {
+              xaxis: { title: 'PD* (predicted default prob.)', range: [0, 1] },
+              yaxis: { title: 'Score (0–100)', range: [0, 100] },
+              margin: { l: 60, r: 20, t: 20, b: 50 },
+              paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+              font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+              legend: { orientation: 'h', y: 1.12 },
+            }, { displayModeBar: false, responsive: true });
+          }
+
+          // Quintile bars
+          const qEl = document.getElementById('pop-quintiles');
+          if (qEl) {
+            const colors = ['#0f4c4a', '#317c79', '#b18a3a', '#a26528', '#b91c1c'];
+            Plotly.react(qEl, [{
+              type: 'bar',
+              x: this.validation.quintiles.map(q => q.q),
+              y: this.validation.quintiles.map(q => q.mean),
+              marker: { color: colors },
+              text: this.validation.quintiles.map(q => q.mean.toFixed(1)),
+              textposition: 'outside',
+              hovertemplate: '%{x}: mean %{y:.1f}<extra></extra>',
+            }], {
+              xaxis: { title: 'PD* quintile (Q1 = safest)' },
+              yaxis: { title: 'Mean score', range: [0, 100] },
+              margin: { l: 60, r: 20, t: 20, b: 50 },
+              paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+              font: { family: 'Inter, system-ui, sans-serif', size: 11 },
+            }, { displayModeBar: false, responsive: true });
+          }
+        },
+
+        currentPdStar() {
+          if (this.pdSource === 'mc' && this.mcInfo?.pdStar) return this.mcInfo.pdStar;
+          return this.fitInfo?.pdStar || null;
+        },
+
+        async runMC() {
+          if (!this.popResult.members || this.mcRunning) return;
+          this.mcRunning = true;
+          this.mcProgress = 0;
+          await new Promise(r => setTimeout(r, 30));
+          const v = this.popVals;
+          const t0 = performance.now();
+          try {
+            const res = window.CIKA.monteCarloPDStar(this.popResult.members, {
+              nRuns: this.mcRuns | 0,
+              seed: v.seed | 0,
+              streak_threshold: v.streak_threshold | 0,
+              within_group_corr: v.within_group_corr,
+              stress_level: v.stress_level,
+              onProgress: p => { this.mcProgress = p; },
+            });
+            const elapsedMs = Math.round(performance.now() - t0);
+            this.mcInfo = { ...res, elapsedMs, nRuns: this.mcRuns };
+            // Switch view to MC and re-validate
+            this.pdSource = 'mc';
+            this.validation = window.CIKA.computeValidation(this.popResult.members, res.pdStar);
+            this.$nextTick(() => this.redrawValCharts());
+          } catch (e) {
+            console.error(e);
+            alert('MC PD* failed: ' + e.message);
+          } finally {
+            this.mcRunning = false;
+            this.mcProgress = 1;
+          }
+        },
+
+        onPdSourceChange() {
+          const pd = this.currentPdStar();
+          if (!pd) return;
+          this.validation = window.CIKA.computeValidation(this.popResult.members, pd);
+          this.$nextTick(() => this.redrawValCharts());
+        },
+
+        downloadCsv() {
+          if (!this.popResult.members) return;
+          // Attach pd_star (logistic) and pd_star_mc when available
+          const members = this.popResult.members.map((m, i) => ({
+            ...m,
+            pd_star: this.fitInfo?.pdStar ? this.fitInfo.pdStar[i] : null,
+            pd_star_mc: this.mcInfo?.pdStar ? this.mcInfo.pdStar[i] : null,
+          }));
+          const csv = window.CIKA.membersToCsv(members);
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `cika_population_seed${this.popVals.seed}_n${this.popResult.summary.n_members}.csv`;
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        },
+      };
+    }
+  </script>
+</body>
 </html>
