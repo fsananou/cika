@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CIKA — Credit Score Simulator</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; padding: 0; }
+      #loading {
+        font-family: -apple-system, system-ui, sans-serif;
+        display: flex; align-items: center; justify-content: center;
+        height: 100%; flex-direction: column; gap: 12px; color: #444;
+      }
+      #loading .spinner {
+        width: 32px; height: 32px; border: 3px solid #ddd;
+        border-top-color: #ff4b4b; border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      #error {
+        font-family: -apple-system, system-ui, sans-serif;
+        padding: 20px; color: #c00; white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="loading">
+        <div class="spinner"></div>
+        <div>Loading CIKA Credit Score Simulator…</div>
+        <div style="font-size:12px;color:#888">First load downloads the Python runtime (~20–30s). Subsequent visits are cached and instant.</div>
+      </div>
+    </div>
+    <script type="module">
+      try {
+        const { mount } = await import(
+          "https://cdn.jsdelivr.net/npm/@stlite/browser@1.7.3/build/stlite.js"
+        );
+
+        mount(
+          {
+            requirements: ["altair"],
+            entrypoint: "cika_score_app.py",
+            files: {
+              "cika_score_app.py": { url: "./cika_score_app.py" },
+              "rosca_score_engine.py": { url: "./rosca_score_engine.py" },
+            },
+          },
+          document.getElementById("root"),
+        );
+      } catch (e) {
+        document.getElementById("root").innerHTML =
+          '<div id="error">Failed to load:\n' + (e && e.stack ? e.stack : e) + '</div>';
+        console.error(e);
+      }
+    </script>
+  </body>
+</html>
